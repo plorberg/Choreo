@@ -1,68 +1,175 @@
 :root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
-
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial;
+  color-scheme: dark;
+  --bg: #0b0c10;
+  --panel: #0f1118;
+  --border: #202431;
+  --muted: #9aa3b2;
 }
 
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-a:hover {
-  color: #535bf2;
-}
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
 
 body {
-  margin: 0;
-  display: flex;
-  place-items: center;
-  min-width: 320px;
-  min-height: 100vh;
+  background: var(--bg);
+  color: #e9eef5;
 }
 
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
-}
-
-button {
+button, input, select {
+  background: #161923;
+  color: #e9eef5;
+  border: 1px solid #2a2f3d;
   border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  background-color: #1a1a1a;
-  cursor: pointer;
-  transition: border-color 0.25s;
-}
-button:hover {
-  border-color: #646cff;
-}
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
+  padding: 6px 10px;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    color: #213547;
-    background-color: #ffffff;
-  }
-  a:hover {
-    color: #747bff;
-  }
-  button {
-    background-color: #f9f9f9;
-  }
+button:hover { border-color: #3a4154; cursor: pointer; }
+
+.app {
+  height: 100vh;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.brand { font-weight: 700; }
+.topbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.main {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 12px;
+  overflow: hidden;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.panel h2 { margin: 0; font-size: 14px; }
+
+.canvas {
+  flex: 1;
+  min-height: 0;
+  border-radius: 10px;
+  border: 1px solid #3a2a1a;
+  position: relative;
+  overflow: hidden;
+  touch-action: none;
+
+  /* Dance floor look */
+  background:
+    /* subtle plank seams */
+    repeating-linear-gradient(
+      90deg,
+      rgba(0, 0, 0, 0.06) 0px,
+      rgba(0, 0, 0, 0.06) 2px,
+      rgba(0, 0, 0, 0.00) 2px,
+      rgba(0, 0, 0, 0.00) 40px
+    ),
+    /* warm wood gradient */
+    linear-gradient(
+      180deg,
+      #7a4a2b 0%,
+      #6b4025 50%,
+      #5c351f 100%
+    );
+}
+
+.hint { padding: 12px; color: var(--muted); }
+
+/* Stage 2D */
+.stage2d {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+  user-select: none;
+}
+
+.stage2d-grid {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+  user-select: none;
+}
+
+/* Dancers */
+.dancer {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  user-select: none;
+  touch-action: none;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 6px 16px rgba(0,0,0,0.35);
+  border: 2px solid rgba(255,255,255,0.10);
+}
+/* Couple Tokens */
+.coupleToken {
+  position: absolute;
+  width: 44px;
+  height: 44px;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.10);
+  border: 2px solid rgba(255, 255, 255, 0.45);
+  box-shadow: 0 6px 16px rgba(0,0,0,0.35);
+  display: grid;
+  place-items: center;
+  user-select: none;
+  touch-action: none;
+}
+
+.coupleTokenId {
+  font-weight: 800;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.coupleTokenMeters {
+  margin-top: 2px;
+  font-size: 10px;
+  line-height: 1;
+  color: rgba(255,255,255,0.75);
+}
+
+/* Timeline */
+.timeline {
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.transport { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.ruler {
+  height: 48px;
+  border-radius: 10px;
+  border: 1px dashed #2a2f3d;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
 }

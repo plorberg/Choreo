@@ -1,28 +1,44 @@
-import "./App.css";
+import React, { useState } from "react";
+import { AppStateProvider, useAppState } from "./state/useAppState";
+import Stage2D from "./components/Stage2D";
+import ThreePreview from "./components/ThreePreview";
 
-export default function App() {
+function AppInner() {
+  const [show3D, setShow3D] = useState(false);
+  const { viewMode, setViewMode } = useAppState();
+
   return (
     <div className="app">
       <header className="topbar">
-        <div className="brand">Choreo Editor (MVP)</div>
+        <div className="brand">Choreo Editor (MVP 1)</div>
         <div className="topbar-actions">
           <button>New</button>
           <button>Load</button>
           <button>Save</button>
           <button>Save Version</button>
           <button>Versions</button>
+
+          <button onClick={() => setViewMode(viewMode === "couples" ? "dancers" : "couples")}>
+            {viewMode === "couples" ? "Split Couples" : "Show Couples"}
+          </button>
+
+          <button onClick={() => setShow3D((s) => !s)}>{show3D ? "Show 2D" : "Show 3D"}</button>
         </div>
       </header>
 
       <main className="main">
         <section className="panel">
           <h2>2D Stage Editor</h2>
-          <div className="canvasPlaceholder">Stage canvas goes here</div>
+          <div className="canvas">
+            <Stage2D />
+          </div>
         </section>
 
         <section className="panel">
           <h2>3D Preview</h2>
-          <div className="canvasPlaceholder">3D canvas goes here</div>
+          <div className="canvas">
+            {show3D ? <ThreePreview /> : <div className="hint">Toggle to 3D to preview</div>}
+          </div>
         </section>
       </main>
 
@@ -47,8 +63,16 @@ export default function App() {
           <button>Upload Audio</button>
         </div>
 
-        <div className="rulerPlaceholder">Timeline ruler goes here</div>
+        <div className="ruler">Timeline ruler placeholder</div>
       </footer>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AppStateProvider>
+      <AppInner />
+    </AppStateProvider>
   );
 }
