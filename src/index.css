@@ -154,7 +154,8 @@ button:hover { border-color: #3a4154; cursor: pointer; }
   color: rgba(255,255,255,0.75);
 }
 
-/* Timeline */
+/* ===== Timeline ===== */
+
 .timeline {
   background: var(--panel);
   border-top: 1px solid var(--border);
@@ -162,14 +163,253 @@ button:hover { border-color: #3a4154; cursor: pointer; }
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-height: 180px; /* IMPORTANT: makes timeline visible */
 }
 
-.transport { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.ruler {
-  height: 48px;
+.transport {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.upload input { display: none; }
+.upload {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  cursor: pointer;
+}
+
+.audioName {
+  margin-left: auto;
+  color: rgba(255,235,210,0.75);
+  font-size: 12px;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timelineOuter {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.timelineHeader {
+  display: flex;
+  justify-content: space-between;
+  color: rgba(255,235,210,0.85);
+  font-size: 12px;
+}
+
+.timelineScroll {
+  height: 96px; /* IMPORTANT: the ruler height */
   border-radius: 10px;
-  border: 1px dashed #2a2f3d;
+  border: 1px solid rgba(255,235,210,0.22);
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: rgba(0,0,0,0.18);
+  position: relative;
+}
+
+.timelineInner {
+  height: 100%;
+  position: relative;
+}
+
+.tick {
+  position: absolute;
+  bottom: 0;
+  height: 26px;
+  width: 1px;
+  background: rgba(255,235,210,0.20);
+}
+
+.tickBar {
+  height: 44px;
+  width: 2px;
+  background: rgba(255,235,210,0.45);
+}
+
+.tickLabel {
+  position: absolute;
+  top: 6px;
+  font-size: 11px;
+  color: rgba(255,235,210,0.80);
+}
+
+.playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255, 79, 163, 0.95);
+  box-shadow: 0 0 10px rgba(255, 79, 163, 0.35);
+  pointer-events: none;
+}
+
+.loopMarker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  pointer-events: none;
+}
+.timeHelp {
+  color: rgba(255,235,210,0.65);
+  font-size: 12px;
+}
+
+.waveform {
+  position: absolute;
+  left: 20px;
+  right: 0;
+  bottom: 8px;
+  height: 78px;
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.waveBar {
+  width: 2px;
+  background: rgba(255,235,210,0.45);
+  border-radius: 2px;
+}
+
+.waveCanvas {
+  position: absolute;
+  left: 0;
+  top: 10px;
+  height: 78px;
+  width: 100%;
+  pointer-events: none;
+  opacity: 0.85;
+}
+
+.loopA { background: rgba(46, 125, 255, 0.95); }
+.loopB { background: rgba(46, 255, 155, 0.95); }
+
+/* ===== Stable app layout (prevents stage collapsing when timeline changes) ===== */
+
+html, body, #root {
+  height: 100%;
+}
+
+.app {
+  height: 100%;
   display: grid;
-  place-items: center;
-  color: var(--muted);
+  grid-template-rows: auto 1fr 180px; /* fixed timeline height */
+  overflow: hidden;
+}
+
+/* top bar */
+.topbar {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255,235,210,0.12);
+}
+
+/* main content stays stable */
+.main {
+  min-height: 0; /* allows children to scroll properly */
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 12px;
+  overflow: hidden;
+}
+
+.panel {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(255,235,210,0.10);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.panel h2 {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 14px;
+  border-bottom: 1px solid rgba(255,235,210,0.10);
+}
+
+.canvas {
+  position: relative;         /* IMPORTANT for absolute Stage2D */
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 12px;
+}
+
+/* timeline footer is fixed height -> no reflow of main */
+.timeline {
+  min-height: 0;
+  overflow: hidden;
+  border-top: 1px solid rgba(255,235,210,0.12);
+  padding: 10px 12px;
+  background: rgba(0,0,0,0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ensure waveform/timeline doesn't change height dynamically */
+.timelineOuter {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Make the scroll area fixed height */
+.timelineScroll {
+  height: 96px;
+}
+
+/* Wave canvas stays inside the ruler; doesn't affect layout */
+.waveCanvas {
+  position: absolute;
+  left: 0;
+  top: 10px;
+  height: 78px;
+  width: 100%;
+  pointer-events: none;
+  opacity: 0.85;
+}
+
+/* On narrow screens stack panels */
+@media (max-width: 1000px) {
+  .main {
+    grid-template-columns: 1fr;
+  }
+}
+
+.divider {
+  width: 1px;
+  height: 22px;
+  background: rgba(255,235,210,0.18);
+  display: inline-block;
+  margin: 0 6px;
+}
+
+/* frame markers on timeline */
+.frameDot {
+  position: absolute;
+  top: 54px;
+  transform: translateX(-4px);
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(0,0,0,0.35);
+  background: rgba(46,125,255,0.95);
+  box-shadow: 0 0 8px rgba(46,125,255,0.35);
+  cursor: pointer;
+  padding: 0;
+}
+.frameDot:hover {
+  transform: translateX(-4px) scale(1.15);
 }

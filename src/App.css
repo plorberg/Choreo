@@ -125,3 +125,101 @@ button:hover {
   place-items: center;
   color: #9aa3b2;
 }
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,235,210,0.25);
+  color: rgba(255,235,210,0.85);
+  font-size: 12px;
+}
+
+.upload input { display: none; }
+.upload {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  cursor: pointer;
+}
+
+.audioName {
+  margin-left: auto;
+  color: rgba(255,235,210,0.75);
+  font-size: 12px;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Timeline */
+.timelineOuter {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.timelineHeader {
+  display: flex;
+  justify-content: space-between;
+  color: rgba(255,235,210,0.8);
+  font-size: 12px;
+}
+
+.timelineScroll {
+  height: 64px;
+  border-radius: 10px;
+  border: 1px dashed rgba(255,235,210,0.22);
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: rgba(0,0,0,0.15);
+  position: relative;
+}
+
+.timelineInner {
+  height: 100%;
+  position: relative;
+}
+
+.tick {
+  position: absolute;
+  top: 18px;
+  height: 18px;
+  width: 1px;
+  background: rgba(255,235,210,0.22);
+}
+
+.tickBar {
+  top: 10px;
+  height: 26px;
+  width: 2px;
+  background: rgba(255,235,210,0.40);
+}
+
+.tickLabel {
+  position: absolute;
+  top: 2px;
+  font-size: 11px;
+  color: rgba(255,235,210,0.75);
+}
+
+.playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255, 79, 163, 0.95);
+  box-shadow: 0 0 10px rgba(255, 79, 163, 0.45);
+}
+
+.loopMarker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+}
+
+.loopA { background: rgba(46, 125, 255, 0.85); }
+.loopB { background: rgba(46, 255, 155, 0.85); }
