@@ -2,11 +2,18 @@ import React, { createContext, useContext, useEffect, useMemo, useRef, useState 
 
 export type Vec2 = { x: number; y: number };
 
+export type PictureKind = "main" | "move";
+
 export type Picture = {
   id: string;
   name: string;
+  kind: PictureKind; // main vs move
   positions: Record<string, Vec2>; // ALWAYS dancer positions
-  toNextSec: number;
+  holdSec: number; // stay time on this picture
+  moveSec: number; // transition time to next picture
+
+  /** ✅ legacy compat: old UI expects toNextSec */
+  toNextSec?: number;
 };
 
 export type Sequence = {
@@ -32,7 +39,7 @@ export type ChoreoExport = {
   app: "Choreo";
   sequences: Sequence[];
   activeSequenceId: string | null;
-  versions?: ChoreoVersion[]; // optional
+  versions?: ChoreoVersion[];
 };
 
 type ChoreoState = {
@@ -48,10 +55,13 @@ type ChoreoState = {
   renameSequence: (id: string, name: string) => void;
   deleteSequence: (id: string) => void;
 
-  addPicture: (positions: Record<string, Vec2>, name?: string) => void;
+  addPicture: (positions: Record<string, Vec2>, name?: string, kind?: PictureKind) => void;
   renamePicture: (pictureId: string, name: string) => void;
   deletePicture: (pictureId: string) => void;
-  setTransitionDuration: (pictureId: string, seconds: number) => void;
+
+  setHoldDuration: (pictureId: string, seconds: number) => void;
+  setMoveDuration: (pictureId: string, seconds: number) => void;
+  setPictureKind: (pictureId: string, kind: PictureKind) => void;
 
   play: () => void;
   pause: () => void;
@@ -67,11 +77,19 @@ type ChoreoState = {
   deleteVersion: (versionId: string) => void;
   clearVersions: () => void;
 
+  // Export/Import
   buildExport: (includeVersions: boolean) => ChoreoExport;
-  importExport: (data: ChoreoExport) => void;
+  importExport: (data: any) => void;
+
+  // For "import/restore should load first picture into editor"
+  loadToken: number;
+  getPictureStartSec: (pictureIndex: number) => number;
+
+  // ✅ legacy compat (old UI)
+  setTransitionDuration: (pictureId: string, seconds: number) => void;
 };
 
-const STORAGE_KEY = "choreo_sequences_v3";
+const STORAGE_KEY = "choreo_sequences_v4";
 const VERSIONS_KEY = "choreo_versions_v1";
 const Ctx = createContext<ChoreoState | null>(null);
 
@@ -88,11 +106,33 @@ function safeParse<T>(raw: string | null): T | null {
   }
 }
 
+function normalizeSequence(seq: Sequence): Sequence {
+  // Backwards compat: if older exports lacked kind/hold/move.
+  const pics = (seq.pictures ?? []).map((p: any, i: number) => {
+    const kind: PictureKind = p.kind === "move" ? "move" : "main";
+    const holdSec = Number.isFinite(p.holdSec) ? Number(p.holdSec) : kind === "main" ? 1.0 : 0;
+    const moveSec =
+      Number.isFinite(p.moveSec) ? Number(p.moveSec) : Number.isFinite(p.toNextSec) ? Number(p.toNextSec) : 2.0;
+        return {
+      id: String(p.id ?? uid("pic")),
+      name: String(p.name ?? `Picture ${i + 1}`),
+      kind,
+      positions: p.positions ?? {},
+      holdSec,
+      moveSec,
+
+      // ✅ legacy compat
+      toNextSec: moveSec,
+    } satisfies Picture;
+  });
+
+  return { ...seq, pictures: pics };
+}
+
 export function ChoreoProvider({ children }: { children: React.ReactNode }) {
   const [sequences, setSequences] = useState<Sequence[]>([]);
   const [activeSequenceId, _setActiveSequenceId] = useState<string | null>(null);
 
-  // ✅ immediate, race-proof active id
   const activeIdRef = useRef<string | null>(null);
   const setActiveSequenceId = (id: string | null) => {
     activeIdRef.current = id;
@@ -103,6 +143,7 @@ export function ChoreoProvider({ children }: { children: React.ReactNode }) {
   const [currentSec, setCurrentSec] = useState(0);
 
   const [versions, setVersions] = useState<ChoreoVersion[]>([]);
+  const [loadToken, setLoadToken] = useState(0);
 
   // RAF clock refs
   const rafRef = useRef<number | null>(null);
@@ -119,9 +160,9 @@ export function ChoreoProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const parsed = safeParse<Sequence[]>(localStorage.getItem(STORAGE_KEY));
     if (parsed && Array.isArray(parsed)) {
-      setSequences(parsed);
-      const firstId = parsed.length > 0 ? parsed[0].id : null;
-      setActiveSequenceId(firstId);
+      const norm = parsed.map(normalizeSequence);
+      setSequences(norm);
+      setActiveSequenceId(norm.length > 0 ? norm[0].id : null);
     }
 
     const v = safeParse<ChoreoVersion[]>(localStorage.getItem(VERSIONS_KEY));
@@ -145,7 +186,14 @@ export function ChoreoProvider({ children }: { children: React.ReactNode }) {
   const durationSec = useMemo(() => {
     const seq = getActiveSequence();
     if (!seq || seq.pictures.length < 2) return 0;
-    return seq.pictures.slice(0, -1).reduce((a, p) => a + p.toNextSec, 0);
+
+    let total = 0;
+    for (let i = 0; i < seq.pictures.length - 1; i++) {
+      const p = seq.pictures[i];
+      total += Math.max(0, p.holdSec || 0) + Math.max(0.001, p.moveSec || 2);
+    }
+    // last picture: only hold affects usability, but timeline ends at last arrival for MVP
+    return total;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sequences, activeSequenceId]);
 
@@ -153,10 +201,23 @@ export function ChoreoProvider({ children }: { children: React.ReactNode }) {
     durationRef.current = durationSec;
   }, [durationSec]);
 
+  const getPictureStartSec = (pictureIndex: number) => {
+    const seq = getActiveSequence();
+    if (!seq || pictureIndex <= 0) return 0;
+    const idx = Math.min(pictureIndex, seq.pictures.length - 1);
+
+    let acc = 0;
+    for (let i = 0; i < idx; i++) {
+      const p = seq.pictures[i];
+      acc += Math.max(0, p.holdSec || 0) + Math.max(0.001, p.moveSec || 2);
+    }
+    return acc;
+  };
+
   /* -------------------- RAF playback loop -------------------- */
 
   const stopRaf = () => {
-    if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+    if (rafRef.current !=null) cancelAnimationFrame(rafRef.current);
     rafRef.current = null;
     lastTsRef.current = null;
   };
@@ -209,10 +270,7 @@ export function ChoreoProvider({ children }: { children: React.ReactNode }) {
       createdAt: Date.now(),
       pictures: [],
     };
-
-    // ✅ set active immediately (ref + state)
     setActiveSequenceId(seq.id);
-
     setSequences((prev) => [seq, ...prev]);
     setCurrentSec(0);
     setIsPlaying(false);
@@ -224,6 +282,10 @@ export function ChoreoProvider({ children }: { children: React.ReactNode }) {
     setIsPlaying(false);
   };
 
+  const setTransitionDuration = (pictureId: string, seconds: number) => {
+    setMoveDuration(pictureId, seconds);
+  };
+
   const renameSequence = (id: string, name: string) => {
     const n = (name ?? "").trim();
     if (!n) return;
@@ -233,11 +295,7 @@ export function ChoreoProvider({ children }: { children: React.ReactNode }) {
   const deleteSequence = (id: string) => {
     setSequences((prev) => {
       const out = prev.filter((s) => s.id !== id);
-      // if active deleted, switch to new first
-      if (activeIdRef.current === id) {
-        const nextId = out.length > 0 ? out[0].id : null;
-        setActiveSequenceId(nextId);
-      }
+      if (activeIdRef.current === id) setActiveSequenceId(out.length ? out[0].id : null);
       return out;
     });
     setCurrentSec(0);
@@ -246,18 +304,23 @@ export function ChoreoProvider({ children }: { children: React.ReactNode }) {
 
   /* -------------------- picture ops -------------------- */
 
-  const addPicture = (positions: Record<string, Vec2>, name?: string) => {
+  const addPicture = (positions: Record<string, Vec2>, name?: string, kind?: PictureKind) => {
     const picName = (name ?? "").trim();
+    const k: PictureKind = kind === "move" ? "move" : "main";
 
     setSequences((prev) => {
       const pic: Picture = {
         id: uid("pic"),
         name: picName || "Picture",
+        kind: k,
         positions,
-        toNextSec: 2,
+        holdSec: k === "main" ? 1.0 : 0,
+        moveSec: 2.0,
+
+        // ✅ legacy compat
+        toNextSec: 2.0,
       };
 
-      // 1) If no sequences exist, create one AND add the picture immediately
       if (prev.length === 0) {
         const seq: Sequence = {
           id: uid("seq"),
@@ -269,21 +332,11 @@ export function ChoreoProvider({ children }: { children: React.ReactNode }) {
         return [seq];
       }
 
-      // 2) Determine target sequence (race-proof)
-      let targetId = activeIdRef.current;
-
-      if (!targetId) {
-        targetId = prev[0].id;
-        setActiveSequenceId(targetId);
-      }
+      let targetId = activeIdRef.current ?? prev[0].id;
+      if (!targetId) return prev;
 
       let idx = prev.findIndex((s) => s.id === targetId);
-      if (idx === -1) {
-        // fallback to first
-        targetId = prev[0].id;
-        idx = 0;
-        setActiveSequenceId(targetId);
-      }
+      if (idx === -1) idx = 0;
 
       const seq = prev[idx];
       const nextPicName = picName || `Picture ${seq.pictures.length + 1}`;
@@ -312,12 +365,33 @@ export function ChoreoProvider({ children }: { children: React.ReactNode }) {
     setIsPlaying(false);
   };
 
-  const setTransitionDuration = (pictureId: string, seconds: number) => {
+  const setHoldDuration = (pictureId: string, seconds: number) => {
+    const s = clamp(seconds, 0, 60);
+    setSequences((prev) =>
+      prev.map((seq) => ({
+        ...seq,
+        pictures: seq.pictures.map((p) => (p.id === pictureId ? { ...p, holdSec: s } : p)),
+      }))
+    );
+  };
+
+  const setMoveDuration = (pictureId: string, seconds: number) => {
     const s = clamp(seconds, 0.1, 60);
     setSequences((prev) =>
       prev.map((seq) => ({
         ...seq,
-        pictures: seq.pictures.map((p) => (p.id === pictureId ? { ...p, toNextSec: s } : p)),
+        pictures: seq.pictures.map((p) =>
+          p.id === pictureId ? { ...p, moveSec: s, toNextSec: s } : p
+        ),
+      }))
+    );
+  };
+
+  const setPictureKind = (pictureId: string, kind: PictureKind) => {
+    setSequences((prev) =>
+      prev.map((seq) => ({
+        ...seq,
+        pictures: seq.pictures.map((p) => (p.id === pictureId ? { ...p, kind } : p)),
       }))
     );
   };
@@ -338,7 +412,7 @@ export function ChoreoProvider({ children }: { children: React.ReactNode }) {
     setCurrentSec(d <= 0 ? 0 : clamp(sec, 0, d));
   };
 
-  /* -------------------- pose interpolation -------------------- */
+  /* -------------------- pose evaluation (HOLD + MOVE) -------------------- */
 
   const getPoseAtSec = (sec: number) => {
     const seq = getActiveSequence();
@@ -348,16 +422,25 @@ export function ChoreoProvider({ children }: { children: React.ReactNode }) {
     const total = durationSec;
     if (total <= 0) return seq.pictures[0].positions;
 
-    let acc = 0;
     const t = clamp(sec, 0, total);
+    let acc = 0;
 
     for (let i = 0; i < seq.pictures.length - 1; i++) {
       const a = seq.pictures[i];
       const b = seq.pictures[i + 1];
-      const d = Math.max(0.001, a.toNextSec);
 
-      if (t >= acc && t <= acc + d) {
-        const k = clamp((t - acc) / d, 0, 1);
+      const hold = Math.max(0, a.holdSec || 0);
+      const move = Math.max(0.001, a.moveSec || 2);
+
+      // HOLD window
+      if (t >= acc && t <= acc + hold) {
+        return a.positions;
+      }
+      acc += hold;
+
+      // MOVE window
+      if (t >= acc && t <= acc + move) {
+        const k = clamp((t - acc) / move, 0, 1);
         const out: Record<string, Vec2> = {};
         const ids = new Set([...Object.keys(a.positions), ...Object.keys(b.positions)]);
 
@@ -369,7 +452,8 @@ export function ChoreoProvider({ children }: { children: React.ReactNode }) {
 
         return out;
       }
-      acc += d;
+
+      acc += move;
     }
 
     return seq.pictures[seq.pictures.length - 1].positions;
@@ -395,45 +479,56 @@ export function ChoreoProvider({ children }: { children: React.ReactNode }) {
     const v = versions.find((x) => x.id === versionId);
     if (!v) return;
 
-    setSequences(structuredClone(v.snapshot.sequences));
-    setActiveSequenceId(v.snapshot.activeSequenceId);
+    const norm = structuredClone(v.snapshot.sequences).map(normalizeSequence);
+    setSequences(norm);
+    setActiveSequenceId(v.snapshot.activeSequenceId ?? (norm[0]?.id ?? null));
     setCurrentSec(0);
     setIsPlaying(false);
+    setLoadToken((x) => x + 1); // ✅ trigger "load first picture into editor"
   };
 
-  const deleteVersion = (versionId: string) => {
-    setVersions((prev) => prev.filter((v) => v.id !== versionId));
-  };
-
+  const deleteVersion = (versionId: string) => setVersions((prev) => prev.filter((v) => v.id !== versionId));
   const clearVersions = () => setVersions([]);
 
-const buildExport = (includeVersions: boolean): ChoreoExport => ({
-  schema: "choreo-export-v1",
-  exportedAt: Date.now(),
-  app: "Choreo",
-  sequences: structuredClone(sequences),
-  activeSequenceId: activeIdRef.current,
-  versions: includeVersions ? structuredClone(versions) : undefined,
-});
+  /* -------------------- export / import -------------------- */
 
-const importExport = (data: ChoreoExport) => {
-  if (!data || data.schema !== "choreo-export-v1") {
-    alert("Invalid file format (expected choreo-export-v1).");
-    return;
-  }
-  if (!Array.isArray(data.sequences)) {
-    alert("Invalid export: sequences missing.");
-    return;
-  }
+  const buildExport = (includeVersions: boolean): ChoreoExport => ({
+    schema: "choreo-export-v1",
+    exportedAt: Date.now(),
+    app: "Choreo",
+    sequences: structuredClone(sequences),
+    activeSequenceId: activeIdRef.current,
+    versions: includeVersions ? structuredClone(versions) : undefined,
+  });
 
-  setSequences(structuredClone(data.sequences));
-  setActiveSequenceId(data.activeSequenceId ?? (data.sequences[0]?.id ?? null));
+  const importExport = (data: any) => {
+    if (!data || data.schema !== "choreo-export-v1") {
+      alert("Invalid file format (expected choreo-export-v1).");
+      return;
+    }
+    if (!Array.isArray(data.sequences)) {
+      alert("Invalid export: sequences missing.");
+      return;
+    }
 
-  if (Array.isArray(data.versions)) setVersions(structuredClone(data.versions));
+    const seqs = (data.sequences as Sequence[]).map(normalizeSequence);
+    setSequences(structuredClone(seqs));
 
-  setCurrentSec(0);
-  setIsPlaying(false);
-};
+    const nextActive =
+      typeof data.activeSequenceId === "string"
+        ? (data.activeSequenceId as string)
+        : seqs.length > 0
+          ? seqs[0].id
+          : null;
+
+    setActiveSequenceId(nextActive);
+
+    if (Array.isArray(data.versions)) setVersions(structuredClone(data.versions as ChoreoVersion[]));
+
+    setCurrentSec(0);
+    setIsPlaying(false);
+    setLoadToken((x) => x + 1); // ✅ trigger "load first picture into editor"
+  };
 
   const value: ChoreoState = {
     sequences,
@@ -451,7 +546,11 @@ const importExport = (data: ChoreoExport) => {
     addPicture,
     renamePicture,
     deletePicture,
-    setTransitionDuration,
+
+    setHoldDuration,
+    setMoveDuration,
+    setTransitionDuration, // ✅ legacy compat
+    setPictureKind,
 
     play,
     pause,
@@ -467,8 +566,11 @@ const importExport = (data: ChoreoExport) => {
     clearVersions,
 
     buildExport,
-    importExport
-   };
+    importExport,
+    
+    loadToken,
+    getPictureStartSec,
+  };
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
