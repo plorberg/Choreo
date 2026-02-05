@@ -1,136 +1,193 @@
 import React, { useMemo } from "react";
 import { Canvas } from "@react-three/fiber";
-import { OrbitControls, Grid, Environment } from "@react-three/drei";
+import { OrbitControls } from "@react-three/drei";
+import * as THREE from "three";
 import { useAppState } from "../state/useAppState";
-import { useTransport } from "../state/useTransport";
 import { useChoreo } from "../state/useChoreo";
 
-export default function ThreePreview() {
-  const { dancers, couples, viewMode } = useAppState();
-  const t = useTransport();
-  const choreo = useChoreo();
+type Vec2 = { x: number; y: number };
 
-  const pose = t.isPlaying ? choreo.getPoseAtSec(viewMode, t.currentSec) : null;
+const STAGE_HALF = 8;
+const FLOOR_COLOR_1 = "#7a5b3d";
+const FLOOR_COLOR_2 = "#6b4f35";
 
-  const points = useMemo(() => {
-    if (viewMode === "couples") {
-      return couples
-        .map((c: any) => {
-          const leader = dancers.find((d: any) => d.id === c.dancerLeader);
-          if (!leader) return null;
+function coupleLabelFromId(id: string, idx: number) {
+  const m = id.match(/(\d+)\s*$/);
+  return m ? m[1] : String(idx + 1);
+}
 
-          const p = (pose && pose[c.id]) ? pose[c.id] : leader.position;
-          return {
-            id: c.id,
-            x: p.x,
-            z: p.y,
-            color: "#e8e2d6"
-          };
-        })
-        .filter(Boolean) as Array<{ id: string; x: number; z: number; color: string }>;
+function FloorAndGrid() {
+  const floorMat = useMemo(() => new THREE.MeshStandardMaterial({ color: new THREE.Color(FLOOR_COLOR_1) }), []);
+  const lineMinor = useMemo(
+    () => new THREE.LineBasicMaterial({ color: new THREE.Color("white"), transparent: true, opacity: 0.18 }),
+    []
+  );
+  const lineMajor = useMemo(
+    () => new THREE.LineBasicMaterial({ color: new THREE.Color("white"), transparent: true, opacity: 0.45 }),
+    []
+  );
+
+  const gridLines = useMemo(() => {
+    const lines: THREE.Line[] = [];
+    const makeLine = (a: THREE.Vector3, b: THREE.Vector3, major: boolean) => {
+      const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+      lines.push(new THREE.Line(g, major ? lineMajor : lineMinor));
+    };
+
+    const min = -STAGE_HALF;
+    const max = STAGE_HALF;
+
+    for (let i = 0; i <= (STAGE_HALF * 2) * 2; i++) {
+      const v = min + i * 0.5;
+      const isMeter = i % 2 === 0;
+      const emph = isMeter && (Math.abs(v) === 3 || Math.abs(v) === 6);
+      const major = isMeter && emph;
+
+      makeLine(new THREE.Vector3(v, 0.01, min), new THREE.Vector3(v, 0.01, max), major);
+      makeLine(new THREE.Vector3(min, 0.01, v), new THREE.Vector3(max, 0.01, v), major);
     }
 
-    return dancers.map((d: any) => {
-      const p = (pose && pose[d.id]) ? pose[d.id] : d.position;
-      return {
-        id: d.id,
-        x: p.x,
-        z: p.y,
-        color: d.role === "Leader" ? "#2E7DFF" : d.role === "Follower" ? "#FF4FA3" : "#e8e2d6"
-      };
-    });
-  }, [viewMode, couples, dancers, pose]);
+    return lines;
+  }, [lineMajor, lineMinor]);
+
+  return (
+    <group>
+      <mesh rotation-x={-Math.PI / 2} position={[0, 0, 0]} material={floorMat}>
+        <planeGeometry args={[STAGE_HALF * 2, STAGE_HALF * 2]} />
+      </mesh>
+      <mesh rotation-x={-Math.PI / 2} position={[0, 0.001, 0]}>
+        <planeGeometry args={[STAGE_HALF * 2, STAGE_HALF * 2]} />
+        <meshStandardMaterial color={FLOOR_COLOR_2} transparent opacity={0.25} />
+      </mesh>
+
+      {gridLines.map((l, idx) => (
+        <primitive object={l} key={idx} />
+      ))}
+
+      <line>
+        <bufferGeometry
+          attach="geometry"
+          setFromPoints={[
+            new THREE.Vector3(-STAGE_HALF, 0.02, -STAGE_HALF),
+            new THREE.Vector3(STAGE_HALF, 0.02, -STAGE_HALF),
+            new THREE.Vector3(STAGE_HALF, 0.02, STAGE_HALF),
+            new THREE.Vector3(-STAGE_HALF, 0.02, STAGE_HALF),
+            new THREE.Vector3(-STAGE_HALF, 0.02, -STAGE_HALF),
+          ]}
+        />
+        <lineBasicMaterial color="white" transparent opacity={0.5} />
+      </line>
+    </group>
+  );
+}
+
+function StickFigure({ position, color }: { position: [number, number, number]; color: string }) {
+  const mat = useMemo(() => new THREE.MeshStandardMaterial({ color: new THREE.Color(color) }), [color]);
+  return (
+    <group position={position}>
+      <mesh position={[0, 0.5, 0]} material={mat}>
+        <cylinderGeometry args={[0.12, 0.14, 0.9, 16]} />
+      </mesh>
+      <mesh position={[0, 1.1, 0]} material={mat}>
+        <sphereGeometry args={[0.18, 16, 16]} />
+      </mesh>
+    </group>
+  );
+}
+
+export default function ThreePreview() {
+  const app: any = useAppState();
+  const choreo = useChoreo();
+
+  const viewMode: "couples" | "dancers" = app.viewMode ?? "couples";
+  const dancers: any[] = app.dancers ?? [];
+  const couples: any[] = app.couples ?? [];
+
+  const getCoupleLeaderId = (c: any) => String(c.dancerLeader ?? c.leaderId ?? c.leader ?? c.Leader ?? c.a ?? c.A);
+  const getCoupleFollowerId = (c: any) =>
+    String(c.dancerFollower ?? c.followerId ?? c.follower ?? c.Follower ?? c.b ?? c.B);
+
+  const dancerPose = choreo.getPoseAtSec(choreo.currentSec);
+  const isPlayback = Boolean(choreo.isPlaying && dancerPose);
+
+  const findDancerPosFromApp = (id: string): Vec2 | null => {
+    const d = dancers.find((x) => String(x.id) === String(id));
+    return d?.position ? { x: d.position.x, y: d.position.y } : null;
+  };
+
+  const getDancerPos = (id: string): Vec2 | null => {
+    if (isPlayback && dancerPose?.[id]) return { x: dancerPose[id].x, y: dancerPose[id].y };
+    return findDancerPosFromApp(id);
+  };
+
+  const objects = useMemo(() => {
+    if (viewMode === "couples") {
+      return couples
+        .map((c, idx) => {
+          const coupleId = String(c.id ?? idx + 1);
+          const label = coupleLabelFromId(coupleId, idx);
+
+          const leaderId = getCoupleLeaderId(c);
+          const lp = getDancerPos(leaderId);
+          if (!lp) return null;
+
+          // ✅ map 2D y to 3D -z (fix twist)
+          return {
+            key: `c_${coupleId}`,
+            pos: [lp.x, 0, -lp.y] as [number, number, number],
+            color: "#f2f2f2",
+            label,
+          };
+        })
+        .filter(Boolean) as any[];
+    }
+
+    // split view: leader+follower
+    return couples
+      .map((c, idx) => {
+        const coupleId = String(c.id ?? idx + 1);
+        const label = coupleLabelFromId(coupleId, idx);
+
+        const leaderId = getCoupleLeaderId(c);
+        const followerId = getCoupleFollowerId(c);
+
+        const lp = getDancerPos(leaderId);
+        let fp = getDancerPos(followerId);
+
+        if (!lp) return null;
+        if (!fp) fp = { x: lp.x - 0.5, y: lp.y };
+
+        if (Math.abs(fp.x - lp.x) < 1e-9 && Math.abs(fp.y - lp.y) < 1e-9) {
+          fp = { x: lp.x - 0.5, y: lp.y };
+        }
+
+        return [
+          { key: `p_${coupleId}_L`, pos: [lp.x, 0, -lp.y] as [number, number, number], color: "#5aa0ff", label },
+          { key: `p_${coupleId}_F`, pos: [fp.x, 0, -fp.y] as [number, number, number], color: "#ff77b7", label },
+        ];
+      })
+      .flat()
+      .filter(Boolean) as any[];
+  }, [viewMode, couples, dancers, isPlayback, dancerPose]);
 
   return (
     <div style={{ width: "100%", height: "100%" }}>
-      <Canvas shadows camera={{ position: [10, 12, 10], fov: 45 }} gl={{ antialias: true }}>
-        <color attach="background" args={["#0b0c10"]} />
+      <Canvas
+        camera={{ position: [6, 10, 10], fov: 50 }}
+        onCreated={({ gl }) => gl.setClearColor(new THREE.Color("#101318"))}
+      >
+        <ambientLight intensity={0.65} />
+        <directionalLight position={[6, 10, 4]} intensity={0.85} />
+        <directionalLight position={[-6, 8, -4]} intensity={0.4} />
 
-        <ambientLight intensity={0.75} />
-        <directionalLight
-          position={[10, 18, 10]}
-          intensity={1.1}
-          castShadow
-          shadow-mapSize-width={2048}
-          shadow-mapSize-height={2048}
-        />
+        <FloorAndGrid />
 
-        <mesh position={[0, 8, -12]} receiveShadow>
-          <planeGeometry args={[50, 20]} />
-          <meshStandardMaterial color="#1a1d22" roughness={1} />
-        </mesh>
-
-        <mesh receiveShadow rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
-          <planeGeometry args={[40, 40]} />
-          <meshStandardMaterial color="#6b4025" roughness={0.98} metalness={0.0} />
-        </mesh>
-
-        <Grid
-          position={[0, 0.02, 0]}
-          args={[16, 16]}
-          cellSize={1}
-          cellThickness={1.0}
-          cellColor={"#f3e1c3"}
-          sectionSize={4}
-          sectionThickness={2.4}
-          sectionColor={"#ffffff"}
-          fadeDistance={80}
-          fadeStrength={0.2}
-        />
-
-        <StageOutline />
-
-        {points.map((p) => (
-          <StickMarker key={p.id} x={p.x} z={p.z} color={p.color} />
+        {objects.map((o: any) => (
+          <StickFigure key={o.key} position={o.pos} color={o.color} />
         ))}
 
-        <OrbitControls makeDefault enablePan enableZoom minDistance={6} maxDistance={40} target={[0, 0, 0]} />
-        <Environment preset="studio" />
+        <OrbitControls enablePan enableZoom enableRotate target={[0, 0, 0]} maxPolarAngle={Math.PI / 2.05} />
       </Canvas>
     </div>
-  );
-}
-
-function StickMarker({ x, z, color }: { x: number; z: number; color: string }) {
-  return (
-    <group position={[x, 0, z]}>
-      <mesh castShadow position={[0, 0.9, 0]}>
-        <capsuleGeometry args={[0.18, 1.2, 6, 10]} />
-        <meshStandardMaterial color={color} roughness={0.6} />
-      </mesh>
-
-      <mesh castShadow position={[0, 1.8, 0]}>
-        <sphereGeometry args={[0.22, 18, 18]} />
-        <meshStandardMaterial color={"#f5f1ea"} roughness={0.6} />
-      </mesh>
-    </group>
-  );
-}
-
-function StageOutline() {
-  const y = 0.025;
-  const s = 8;
-  return (
-    <group>
-      <Line a={[-s, y, -s]} b={[s, y, -s]} />
-      <Line a={[s, y, -s]} b={[s, y, s]} />
-      <Line a={[s, y, s]} b={[-s, y, s]} />
-      <Line a={[-s, y, s]} b={[-s, y, -s]} />
-    </group>
-  );
-}
-
-function Line({ a, b }: { a: [number, number, number]; b: [number, number, number] }) {
-  const dx = b[0] - a[0];
-  const dz = b[2] - a[2];
-  const len = Math.sqrt(dx * dx + dz * dz);
-  const mid: [number, number, number] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
-  const rotY = Math.atan2(dx, dz);
-
-  return (
-    <mesh position={mid} rotation={[0, rotY, 0]}>
-      <boxGeometry args={[0.09, 0.09, len]} />
-      <meshStandardMaterial color={"#ffffff"} roughness={0.7} />
-    </mesh>
   );
 }

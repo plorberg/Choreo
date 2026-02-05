@@ -1,44 +1,5 @@
-import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
-
-export type TimeSig = "4/4" | "3/4" | "6/8";
-
-export type TransportState = {
-  bpm: number;
-  timeSig: TimeSig;
-
-  audioName: string | null;
-  durationSec: number;
-
-  isPlaying: boolean;
-  currentSec: number;
-
-  loopEnabled: boolean;
-  loopA: number | null;
-  loopB: number | null;
-
-  waveform: Float32Array | null; // normalized peaks (0..1), time-mapped to duration
-
-  setBpm: (bpm: number) => void;
-  setTimeSig: (ts: TimeSig) => void;
-
-  loadAudioFile: (file: File) => Promise<void>;
-  play: () => Promise<void>;
-  pause: () => void;
-  seek: (sec: number) => void;
-
-  setLoopAAt: (sec: number) => void;
-  setLoopBAt: (sec: number) => void;
-  setLoopAHere: () => void;
-  setLoopBHere: () => void;
-
-  clearLoop: () => void;
-  toggleLoop: () => void;
-
-  secToBeat: (sec: number) => number;
-  beatToSec: (beat: number) => number;
-};
-
-const Ctx = createContext<TransportState | undefined>(undefined);
+import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
+import { TransportCtx, TransportState, TimeSig } from "./transportContext";
 
 export function TransportProvider({ children }: { children: React.ReactNode }) {
   const [bpm, setBpmState] = useState(120);
@@ -56,19 +17,40 @@ export function TransportProvider({ children }: { children: React.ReactNode }) {
 
   const [waveform, setWaveform] = useState<Float32Array | null>(null);
 
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  // WebAudio engine
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const bufferRef = useRef<AudioBuffer | null>(null);
+  const sourceRef = useRef<AudioBufferSourceNode | null>(null);
+
+  // playback bookkeeping in refs (source of truth)
+  const isPlayingRef = useRef(false);
+  const startedAtCtxTimeRef = useRef(0);
+  const offsetSecRef = useRef(0);
+
+  // guard to prevent old source.onended from killing new playback
+  const sourceInstanceIdRef = useRef(0);
+
+  // loop refs
+  const loopEnabledRef = useRef(loopEnabled);
+  const loopARef = useRef(loopA);
+  const loopBRef = useRef(loopB);
+
+  useEffect(() => { loopEnabledRef.current = loopEnabled; }, [loopEnabled]);
+  useEffect(() => { loopARef.current = loopA; }, [loopA]);
+  useEffect(() => { loopBRef.current = loopB; }, [loopB]);
+  useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
+
   const rafRef = useRef<number | null>(null);
 
   const secPerBeat = useMemo(() => 60 / Math.max(1, bpm), [bpm]);
   const secToBeat = (sec: number) => sec / secPerBeat;
   const beatToSec = (beat: number) => beat * secPerBeat;
 
-  const getDur = () => {
-    const a = audioRef.current;
-    const stateDur = durationSec;
-    if (stateDur > 0) return stateDur;
-    if (a && Number.isFinite(a.duration) && a.duration > 0) return a.duration;
-    return 0;
+  const ensureCtx = () => {
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+    return audioCtxRef.current;
   };
 
   const stopRaf = () => {
@@ -79,181 +61,274 @@ export function TransportProvider({ children }: { children: React.ReactNode }) {
   const startRaf = () => {
     stopRaf();
     const tick = () => {
-      const a = audioRef.current;
-      if (!a) return;
+      const ctx = audioCtxRef.current;
+      if (!ctx) return;
 
-      const t = a.currentTime;
-      setCurrentSec(t);
+      if (!isPlayingRef.current) {
+        stopRaf();
+        return;
+      }
 
-      if (loopEnabled && loopA != null && loopB != null && loopB > loopA) {
-        // Hard clamp loop while playing
-        if (t >= loopB) {
-          a.currentTime = loopA;
-          setCurrentSec(loopA);
+      const now = ctx.currentTime;
+      let pos = (now - startedAtCtxTimeRef.current) + offsetSecRef.current;
+
+      const dur = bufferRef.current?.duration ?? durationSec ?? 0;
+      pos = Math.max(0, Math.min(dur, pos));
+
+      // ✅ keep playhead inside loop while looping
+      const le = loopEnabledRef.current;
+      const la = loopARef.current;
+      const lb = loopBRef.current;
+      if (le && la != null && lb != null && lb > la) {
+        const loopLen = lb - la;
+        if (loopLen > 0) {
+          if (pos >= lb) pos = la + ((pos - la) % loopLen);
+          if (pos < la) pos = la + ((pos - la) % loopLen + loopLen) % loopLen;
         }
       }
 
+      setCurrentSec(pos);
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
   };
 
-  const pause = () => {
-    const a = audioRef.current;
-    if (!a) return;
-    a.pause();
-    setIsPlaying(false);
-    stopRaf();
+  const stopSource = () => {
+    const s = sourceRef.current;
+    if (!s) return;
+    try { s.onended = null; } catch {}
+    try { s.stop(); } catch {}
+    try { s.disconnect(); } catch {}
+    sourceRef.current = null;
   };
 
-  const play = async () => {
-    const a = audioRef.current;
-    if (!a) return;
+  const computeCurrentPos = () => {
+    const ctx = audioCtxRef.current;
+    const buf = bufferRef.current;
+    if (!ctx || !buf) return offsetSecRef.current;
+    if (!isPlayingRef.current) return offsetSecRef.current;
+    const now = ctx.currentTime;
+    const pos = (now - startedAtCtxTimeRef.current) + offsetSecRef.current;
+    return Math.max(0, Math.min(buf.duration, pos));
+  };
 
-    if (loopEnabled && loopA != null && loopB != null && loopB > loopA) {
-      // audition loop: always start inside loop
-      if (a.currentTime < loopA || a.currentTime > loopB) {
-        a.currentTime = loopA;
-        setCurrentSec(loopA);
-      }
+  const buildSource = (instanceId: number) => {
+    const ctx = ensureCtx();
+    const buf = bufferRef.current;
+    if (!buf) return null;
+
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+
+    const le = loopEnabledRef.current;
+    const la = loopARef.current;
+    const lb = loopBRef.current;
+
+    if (le && la != null && lb != null && lb > la) {
+      src.loop = true;
+      src.loopStart = Math.max(0, Math.min(buf.duration, la));
+      src.loopEnd = Math.max(0, Math.min(buf.duration, lb));
+    } else {
+      src.loop = false;
     }
 
-    await a.play();
+    src.onended = () => {
+      if (sourceInstanceIdRef.current !== instanceId) return;
+      isPlayingRef.current = false;
+      setIsPlaying(false);
+      stopRaf();
+    };
+
+    return src;
+  };
+
+  const startAt = async (sec: number) => {
+    const ctx = ensureCtx();
+    const buf = bufferRef.current;
+    if (!buf) return;
+
+    await ctx.resume();
+
+    let startPos = Math.max(0, Math.min(buf.duration, sec));
+    const le = loopEnabledRef.current;
+    const la = loopARef.current;
+    const lb = loopBRef.current;
+    if (le && la != null && lb != null && lb > la) {
+      if (startPos < la || startPos > lb) startPos = la;
+    }
+
+    const instanceId = ++sourceInstanceIdRef.current;
+
+    stopSource();
+    const src = buildSource(instanceId);
+    if (!src) return;
+
+    sourceRef.current = src;
+
+    offsetSecRef.current = startPos;
+    startedAtCtxTimeRef.current = ctx.currentTime;
+
+    isPlayingRef.current = true;
     setIsPlaying(true);
+
+    src.start(0, startPos);
     startRaf();
   };
 
+  const play = async () => {
+    if (!bufferRef.current) return;
+    await startAt(computeCurrentPos());
+  };
+
+  const pause = () => {
+    if (!bufferRef.current) return;
+
+    const pos = computeCurrentPos();
+    offsetSecRef.current = pos;
+
+    isPlayingRef.current = false;
+    setIsPlaying(false);
+
+    stopSource();
+    stopRaf();
+    setCurrentSec(pos);
+  };
+
   const seek = (sec: number) => {
-    const a = audioRef.current;
-    if (!a) return;
+    const buf = bufferRef.current;
+    if (!buf) return;
 
-    const dur = getDur();
-    const clamped = Math.max(0, Math.min(dur || 0, sec));
+    const clamped = Math.max(0, Math.min(buf.duration, sec));
 
-    a.currentTime = clamped;
-    setCurrentSec(clamped);
+    // if seeking outside loop, disable loop
+    const le = loopEnabledRef.current;
+    const la = loopARef.current;
+    const lb = loopBRef.current;
+    if (le && la != null && lb != null && lb > la) {
+      if (clamped < la || clamped > lb) {
+        setLoopEnabled(false);
+        loopEnabledRef.current = false;
+      }
+    }
+
+    if (isPlayingRef.current) startAt(clamped);
+    else {
+      offsetSecRef.current = clamped;
+      setCurrentSec(clamped);
+    }
   };
 
   const setBpm = (v: number) => setBpmState(Math.max(30, Math.min(240, Math.round(v))));
 
   const clearLoop = () => {
     setLoopEnabled(false);
+    loopEnabledRef.current = false;
     setLoopA(null);
+    loopARef.current = null;
     setLoopB(null);
+    loopBRef.current = null;
+
+    if (isPlayingRef.current) startAt(computeCurrentPos());
   };
 
-  const toggleLoop = () => setLoopEnabled((v) => !v);
+  const toggleLoop = () => {
+    setLoopEnabled((v) => {
+      const next = !v;
+      loopEnabledRef.current = next;
+      return next;
+    });
+
+    if (isPlayingRef.current) startAt(computeCurrentPos());
+  };
 
   const setLoopAAt = (sec: number) => {
-    const dur = getDur();
-    const s = Math.max(0, Math.min(dur || 0, sec));
+    const dur = bufferRef.current?.duration ?? durationSec ?? 0;
+    const s = Math.max(0, Math.min(dur, sec));
     setLoopA(s);
-
-    // if B exists and is < A, keep ordering by pushing B up to A
+    loopARef.current = s;
     setLoopB((b) => (b != null && b < s ? s : b));
   };
 
   const setLoopBAt = (sec: number) => {
-    const dur = getDur();
-    const s = Math.max(0, Math.min(dur || 0, sec));
+    const dur = bufferRef.current?.duration ?? durationSec ?? 0;
+    const s = Math.max(0, Math.min(dur, sec));
     setLoopB(s);
+    loopBRef.current = s;
 
-    // if A exists and is > B, pull A down to B
-    setLoopA((a) => (a != null && a > s ? s : a));
-
-    // Auto-enable loop once B is set (common workflow)
     setLoopEnabled(true);
+    loopEnabledRef.current = true;
+
+    if (isPlayingRef.current) startAt(computeCurrentPos());
   };
 
   const setLoopAHere = () => setLoopAAt(currentSec);
   const setLoopBHere = () => setLoopBAt(currentSec);
 
-  async function computeWaveformPeaks(file: File) {
-    // Build a time-mapped envelope: N samples across full duration
-    try {
-      const arr = await file.arrayBuffer();
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const buf = await ctx.decodeAudioData(arr.slice(0));
+  async function computeWaveformPeaks(buf: AudioBuffer) {
+    const channel = buf.getChannelData(0);
+    const dur = buf.duration || 0;
 
-      const channel = buf.getChannelData(0);
-      const dur = buf.duration || 0;
-      if (dur > 0) setDurationSec(dur);
+    const peaksCount = Math.max(600, Math.min(6000, Math.floor(dur * 12) || 600));
+    const block = Math.max(1, Math.floor(channel.length / peaksCount));
 
-      // resolution: ~120 peaks per minute (good balance)
-      const peaksCount = Math.max(600, Math.min(6000, Math.floor(dur * 12)));
-      const block = Math.max(1, Math.floor(channel.length / peaksCount));
-
-      const peaks = new Float32Array(peaksCount);
-      for (let i = 0; i < peaksCount; i++) {
-        let max = 0;
-        const start = i * block;
-        const end = Math.min(channel.length, start + block);
-        for (let j = start; j < end; j++) {
-          const v = Math.abs(channel[j]);
-          if (v > max) max = v;
-        }
-        peaks[i] = max;
+    const peaks = new Float32Array(peaksCount);
+    for (let i = 0; i < peaksCount; i++) {
+      let max = 0;
+      const start = i * block;
+      const end = Math.min(channel.length, start + block);
+      for (let j = start; j < end; j++) {
+        const v = Math.abs(channel[j]);
+        if (v > max) max = v;
       }
-
-      // normalize 0..1
-      let m = 0.00001;
-      for (let i = 0; i < peaks.length; i++) m = Math.max(m, peaks[i]);
-      for (let i = 0; i < peaks.length; i++) peaks[i] = peaks[i] / m;
-
-      setWaveform(peaks);
-      ctx.close();
-    } catch {
-      setWaveform(null);
+      peaks[i] = max;
     }
+
+    let m = 0.00001;
+    for (let i = 0; i < peaks.length; i++) m = Math.max(m, peaks[i]);
+    for (let i = 0; i < peaks.length; i++) peaks[i] = peaks[i] / m;
+
+    setWaveform(peaks);
   }
 
   const loadAudioFile = async (file: File) => {
-    const prev = audioRef.current?.src;
-    if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
-
-    const url = URL.createObjectURL(file);
     setAudioName(file.name);
 
-    if (!audioRef.current) audioRef.current = new Audio();
-    const a = audioRef.current;
+    stopRaf();
+    stopSource();
 
-    pause();
-    clearLoop();
+    isPlayingRef.current = false;
+    setIsPlaying(false);
+    sourceInstanceIdRef.current++; // invalidate old onended
+
+    setLoopEnabled(false);
+    loopEnabledRef.current = false;
+    setLoopA(null);
+    loopARef.current = null;
+    setLoopB(null);
+    loopBRef.current = null;
+
     setCurrentSec(0);
-    setDurationSec(0);
+    offsetSecRef.current = 0;
 
-    a.src = url;
-    a.preload = "auto";
+    const ctx = ensureCtx();
+    await ctx.resume();
 
-    await new Promise<void>((resolve, reject) => {
-      const onLoaded = () => {
-        if (a.duration && a.duration > 0) setDurationSec(a.duration);
-        resolve();
-      };
-      const onErr = () => reject(new Error("Audio load failed"));
-      a.addEventListener("loadedmetadata", onLoaded, { once: true });
-      a.addEventListener("error", onErr, { once: true });
-    });
+    const arr = await file.arrayBuffer();
+    const buf = await ctx.decodeAudioData(arr.slice(0));
 
-    // duration sometimes stabilizes later
-    a.addEventListener(
-      "durationchange",
-      () => {
-        if (a.duration && a.duration > 0) setDurationSec(a.duration);
-      },
-      { once: true }
-    );
+    bufferRef.current = buf;
+    setDurationSec(buf.duration);
 
-    computeWaveformPeaks(file);
+    await computeWaveformPeaks(buf);
   };
 
   useEffect(() => {
     return () => {
-      pause();
-      const src = audioRef.current?.src;
-      if (src?.startsWith("blob:")) URL.revokeObjectURL(src);
+      stopRaf();
+      stopSource();
+      try { audioCtxRef.current?.close(); } catch {}
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const value: TransportState = {
@@ -280,14 +355,14 @@ export function TransportProvider({ children }: { children: React.ReactNode }) {
     clearLoop,
     toggleLoop,
     secToBeat,
-    beatToSec
+    beatToSec,
   };
 
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+  return <TransportCtx.Provider value={value}>{children}</TransportCtx.Provider>;
 }
 
 export function useTransport() {
-  const ctx = useContext(Ctx);
+  const ctx = useContext(TransportCtx);
   if (!ctx) throw new Error("useTransport must be used within TransportProvider");
   return ctx;
 }

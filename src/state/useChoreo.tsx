@@ -1,326 +1,474 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { Vec2 } from "../types";
-import { useTransport } from "./useTransport";
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 
-export type EntityMode = "couples" | "dancers";
+export type Vec2 = { x: number; y: number };
 
-export type Frame = {
+export type Picture = {
   id: string;
-  // Beat index relative to segment start beat (integer)
-  beat: number;
-  // Entity id -> position
-  positions: Record<string, Vec2>;
+  name: string;
+  positions: Record<string, Vec2>; // ALWAYS dancer positions
+  toNextSec: number;
 };
 
-export type Segment = {
+export type Sequence = {
   id: string;
   name: string;
   createdAt: number;
-
-  mode: EntityMode;
-
-  // Loop bounds in seconds (from transport)
-  startSec: number;
-  endSec: number;
-
-  // Stored for review consistency (MVP)
-  bpm: number;
-  timeSig: string;
-
-  // Frames inside the segment, ordered by beat
-  frames: Frame[];
+  pictures: Picture[];
 };
 
-type Quantize = "1beat" | "2beats" | "1bar";
+export type ChoreoVersion = {
+  id: string;
+  name: string;
+  createdAt: number;
+  snapshot: {
+    sequences: Sequence[];
+    activeSequenceId: string | null;
+  };
+};
+
+export type ChoreoExport = {
+  schema: "choreo-export-v1";
+  exportedAt: number;
+  app: "Choreo";
+  sequences: Sequence[];
+  activeSequenceId: string | null;
+  versions?: ChoreoVersion[]; // optional
+};
 
 type ChoreoState = {
-  segments: Segment[];
-  activeSegmentId: string | null;
+  sequences: Sequence[];
+  activeSequenceId: string | null;
 
-  quantize: Quantize;
-  setQuantize: (q: Quantize) => void;
+  isPlaying: boolean;
+  currentSec: number;
+  durationSec: number;
 
-  // Segment lifecycle
-  createOrUpdateActiveFromLoop: (mode: EntityMode) => void;
-  saveActiveSegment: () => void;
-  loadSegment: (id: string) => void;
-  deleteSegment: (id: string) => void;
+  createSequence: (name?: string) => void;
+  setActiveSequence: (id: string) => void;
+  renameSequence: (id: string, name: string) => void;
+  deleteSequence: (id: string) => void;
 
-  // Frames
-  captureFrameAtCurrentTime: (mode: EntityMode, positions: Record<string, Vec2>) => void;
-  deleteFrameAtCurrentTime: () => void;
+  addPicture: (positions: Record<string, Vec2>, name?: string) => void;
+  renamePicture: (pictureId: string, name: string) => void;
+  deletePicture: (pictureId: string) => void;
+  setTransitionDuration: (pictureId: string, seconds: number) => void;
 
-  // Playback pose
-  getPoseAtSec: (mode: EntityMode, sec: number) => Record<string, Vec2> | null;
+  play: () => void;
+  pause: () => void;
+  seek: (sec: number) => void;
 
-  // For UI
-  getActiveSegment: () => Segment | null;
+  getPoseAtSec: (sec: number) => Record<string, Vec2> | null;
+  getActiveSequence: () => Sequence | null;
+
+  // Versioning
+  versions: ChoreoVersion[];
+  saveVersion: (name?: string) => void;
+  restoreVersion: (versionId: string) => void;
+  deleteVersion: (versionId: string) => void;
+  clearVersions: () => void;
+
+  buildExport: (includeVersions: boolean) => ChoreoExport;
+  importExport: (data: ChoreoExport) => void;
 };
 
-const STORAGE_KEY = "choreo_mvp_segments_v1";
+const STORAGE_KEY = "choreo_sequences_v3";
+const VERSIONS_KEY = "choreo_versions_v1";
+const Ctx = createContext<ChoreoState | null>(null);
 
-const Ctx = createContext<ChoreoState | undefined>(undefined);
+const uid = (p = "id") => `${p}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
-function uid(prefix = "id") {
-  return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
-}
-
-function clamp01(v: number) {
-  return Math.max(0, Math.min(1, v));
+function safeParse<T>(raw: string | null): T | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
 }
 
 export function ChoreoProvider({ children }: { children: React.ReactNode }) {
-  const t = useTransport();
+  const [sequences, setSequences] = useState<Sequence[]>([]);
+  const [activeSequenceId, _setActiveSequenceId] = useState<string | null>(null);
 
-  const [segments, setSegments] = useState<Segment[]>([]);
-  const [activeSegmentId, setActiveSegmentId] = useState<string | null>(null);
+  // ✅ immediate, race-proof active id
+  const activeIdRef = useRef<string | null>(null);
+  const setActiveSequenceId = (id: string | null) => {
+    activeIdRef.current = id;
+    _setActiveSequenceId(id);
+  };
 
-  const [quantize, setQuantize] = useState<Quantize>("1beat");
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentSec, setCurrentSec] = useState(0);
 
-  // Load segments on startup
+  const [versions, setVersions] = useState<ChoreoVersion[]>([]);
+
+  // RAF clock refs
+  const rafRef = useRef<number | null>(null);
+  const lastTsRef = useRef<number | null>(null);
+  const isPlayingRef = useRef(false);
+  const durationRef = useRef(0);
+
   useEffect(() => {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
-    try {
-      const parsed = JSON.parse(raw) as Segment[];
-      if (Array.isArray(parsed)) {
-        setSegments(parsed);
-        if (parsed.length > 0) setActiveSegmentId(parsed[0].id);
-      }
-    } catch {
-      // ignore
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
+
+  /* -------------------- persistence -------------------- */
+
+  useEffect(() => {
+    const parsed = safeParse<Sequence[]>(localStorage.getItem(STORAGE_KEY));
+    if (parsed && Array.isArray(parsed)) {
+      setSequences(parsed);
+      const firstId = parsed.length > 0 ? parsed[0].id : null;
+      setActiveSequenceId(firstId);
     }
+
+    const v = safeParse<ChoreoVersion[]>(localStorage.getItem(VERSIONS_KEY));
+    if (v && Array.isArray(v)) setVersions(v);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Persist whenever segments change
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(segments));
-  }, [segments]);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(sequences));
+  }, [sequences]);
 
-  const getActiveSegment = () => {
-    if (!activeSegmentId) return null;
-    return segments.find((s) => s.id === activeSegmentId) ?? null;
+  useEffect(() => {
+    localStorage.setItem(VERSIONS_KEY, JSON.stringify(versions));
+  }, [versions]);
+
+  /* -------------------- helpers -------------------- */
+
+  const getActiveSequence = () =>
+    activeSequenceId ? sequences.find((s) => s.id === activeSequenceId) ?? null : null;
+
+  const durationSec = useMemo(() => {
+    const seq = getActiveSequence();
+    if (!seq || seq.pictures.length < 2) return 0;
+    return seq.pictures.slice(0, -1).reduce((a, p) => a + p.toNextSec, 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sequences, activeSequenceId]);
+
+  useEffect(() => {
+    durationRef.current = durationSec;
+  }, [durationSec]);
+
+  /* -------------------- RAF playback loop -------------------- */
+
+  const stopRaf = () => {
+    if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+    rafRef.current = null;
+    lastTsRef.current = null;
   };
 
-  const createOrUpdateActiveFromLoop = (mode: EntityMode) => {
-    const loopA = t.loopA;
-    const loopB = t.loopB;
+  const startRaf = () => {
+    stopRaf();
 
-    if (loopA == null || loopB == null || loopB <= loopA) {
-      alert("Set Loop A and Loop B first (A < B).");
-      return;
-    }
-
-    setSegments((prev) => {
-      const active = activeSegmentId ? prev.find((s) => s.id === activeSegmentId) : null;
-
-      // If there is an active segment, update its bounds + mode (keep frames)
-      if (active) {
-        const updated: Segment = {
-          ...active,
-          mode,
-          startSec: loopA,
-          endSec: loopB,
-          bpm: t.bpm,
-          timeSig: t.timeSig
-        };
-        return prev.map((s) => (s.id === active.id ? updated : s));
+    const tick = (ts: number) => {
+      if (!isPlayingRef.current) {
+        stopRaf();
+        return;
       }
 
-      // Create new segment
-      const seg: Segment = {
-        id: uid("seg"),
-        name: `Segment ${prev.length + 1}`,
-        createdAt: Date.now(),
-        mode,
-        startSec: loopA,
-        endSec: loopB,
-        bpm: t.bpm,
-        timeSig: t.timeSig,
-        frames: []
+      const last = lastTsRef.current;
+      lastTsRef.current = ts;
+
+      if (last == null) {
+        rafRef.current = requestAnimationFrame(tick);
+        return;
+      }
+
+      const dt = (ts - last) / 1000;
+      setCurrentSec((prev) => {
+        const d = durationRef.current || 0;
+        if (d <= 0) return 0;
+        let next = prev + dt;
+        if (next >= d) next = next % d;
+        return next;
+      });
+
+      rafRef.current = requestAnimationFrame(tick);
+    };
+
+    rafRef.current = requestAnimationFrame(tick);
+  };
+
+  useEffect(() => {
+    if (isPlaying) startRaf();
+    else stopRaf();
+    return () => stopRaf();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPlaying]);
+
+  /* -------------------- sequence ops -------------------- */
+
+  const createSequence = (name?: string) => {
+    const seq: Sequence = {
+      id: uid("seq"),
+      name: (name ?? "").trim() || `Sequence ${sequences.length + 1}`,
+      createdAt: Date.now(),
+      pictures: [],
+    };
+
+    // ✅ set active immediately (ref + state)
+    setActiveSequenceId(seq.id);
+
+    setSequences((prev) => [seq, ...prev]);
+    setCurrentSec(0);
+    setIsPlaying(false);
+  };
+
+  const setActiveSequence = (id: string) => {
+    setActiveSequenceId(id);
+    setCurrentSec(0);
+    setIsPlaying(false);
+  };
+
+  const renameSequence = (id: string, name: string) => {
+    const n = (name ?? "").trim();
+    if (!n) return;
+    setSequences((prev) => prev.map((s) => (s.id === id ? { ...s, name: n } : s)));
+  };
+
+  const deleteSequence = (id: string) => {
+    setSequences((prev) => {
+      const out = prev.filter((s) => s.id !== id);
+      // if active deleted, switch to new first
+      if (activeIdRef.current === id) {
+        const nextId = out.length > 0 ? out[0].id : null;
+        setActiveSequenceId(nextId);
+      }
+      return out;
+    });
+    setCurrentSec(0);
+    setIsPlaying(false);
+  };
+
+  /* -------------------- picture ops -------------------- */
+
+  const addPicture = (positions: Record<string, Vec2>, name?: string) => {
+    const picName = (name ?? "").trim();
+
+    setSequences((prev) => {
+      const pic: Picture = {
+        id: uid("pic"),
+        name: picName || "Picture",
+        positions,
+        toNextSec: 2,
       };
 
-      setActiveSegmentId(seg.id);
-      return [seg, ...prev];
+      // 1) If no sequences exist, create one AND add the picture immediately
+      if (prev.length === 0) {
+        const seq: Sequence = {
+          id: uid("seq"),
+          name: "Sequence 1",
+          createdAt: Date.now(),
+          pictures: [{ ...pic, name: picName || "Picture 1" }],
+        };
+        setActiveSequenceId(seq.id);
+        return [seq];
+      }
+
+      // 2) Determine target sequence (race-proof)
+      let targetId = activeIdRef.current;
+
+      if (!targetId) {
+        targetId = prev[0].id;
+        setActiveSequenceId(targetId);
+      }
+
+      let idx = prev.findIndex((s) => s.id === targetId);
+      if (idx === -1) {
+        // fallback to first
+        targetId = prev[0].id;
+        idx = 0;
+        setActiveSequenceId(targetId);
+      }
+
+      const seq = prev[idx];
+      const nextPicName = picName || `Picture ${seq.pictures.length + 1}`;
+      const updated: Sequence = { ...seq, pictures: [...seq.pictures, { ...pic, name: nextPicName }] };
+
+      const out = prev.slice();
+      out[idx] = updated;
+      return out;
     });
   };
 
-  const saveActiveSegment = () => {
-    const active = getActiveSegment();
-    if (!active) {
-      alert("No active segment. Click “New Segment from Loop” first.");
-      return;
+  const renamePicture = (pictureId: string, name: string) => {
+    const n = (name ?? "").trim();
+    if (!n) return;
+    setSequences((prev) =>
+      prev.map((s) => ({
+        ...s,
+        pictures: s.pictures.map((p) => (p.id === pictureId ? { ...p, name: n } : p)),
+      }))
+    );
+  };
+
+  const deletePicture = (pictureId: string) => {
+    setSequences((prev) => prev.map((s) => ({ ...s, pictures: s.pictures.filter((p) => p.id !== pictureId) })));
+    setCurrentSec(0);
+    setIsPlaying(false);
+  };
+
+  const setTransitionDuration = (pictureId: string, seconds: number) => {
+    const s = clamp(seconds, 0.1, 60);
+    setSequences((prev) =>
+      prev.map((seq) => ({
+        ...seq,
+        pictures: seq.pictures.map((p) => (p.id === pictureId ? { ...p, toNextSec: s } : p)),
+      }))
+    );
+  };
+
+  /* -------------------- playback controls -------------------- */
+
+  const play = () => {
+    const seq = getActiveSequence();
+    if (!seq || seq.pictures.length < 2) return;
+    if (durationSec <= 0) return;
+    setIsPlaying(true);
+  };
+
+  const pause = () => setIsPlaying(false);
+
+  const seek = (sec: number) => {
+    const d = durationRef.current || 0;
+    setCurrentSec(d <= 0 ? 0 : clamp(sec, 0, d));
+  };
+
+  /* -------------------- pose interpolation -------------------- */
+
+  const getPoseAtSec = (sec: number) => {
+    const seq = getActiveSequence();
+    if (!seq || seq.pictures.length === 0) return null;
+    if (seq.pictures.length === 1) return seq.pictures[0].positions;
+
+    const total = durationSec;
+    if (total <= 0) return seq.pictures[0].positions;
+
+    let acc = 0;
+    const t = clamp(sec, 0, total);
+
+    for (let i = 0; i < seq.pictures.length - 1; i++) {
+      const a = seq.pictures[i];
+      const b = seq.pictures[i + 1];
+      const d = Math.max(0.001, a.toNextSec);
+
+      if (t >= acc && t <= acc + d) {
+        const k = clamp((t - acc) / d, 0, 1);
+        const out: Record<string, Vec2> = {};
+        const ids = new Set([...Object.keys(a.positions), ...Object.keys(b.positions)]);
+
+        ids.forEach((id) => {
+          const pa = a.positions[id] ?? b.positions[id];
+          const pb = b.positions[id] ?? a.positions[id];
+          out[id] = { x: lerp(pa.x, pb.x, k), y: lerp(pa.y, pb.y, k) };
+        });
+
+        return out;
+      }
+      acc += d;
     }
-    // Already persisted via effect; this is just a user-facing confirmation.
-    alert("Segment saved (local).");
+
+    return seq.pictures[seq.pictures.length - 1].positions;
   };
 
-  const loadSegment = (id: string) => {
-    const seg = segments.find((s) => s.id === id);
-    if (!seg) return;
+  /* -------------------- versioning -------------------- */
 
-    setActiveSegmentId(id);
-
-    // Set loop bounds to segment for review
-    t.setLoopAAt(seg.startSec);
-    t.setLoopBAt(seg.endSec);
-    // Enable loop for review
-    if (!t.loopEnabled) t.toggleLoop();
-
-    // Optionally set bpm/timeSig for consistency
-    t.setBpm(seg.bpm);
-    t.setTimeSig(seg.timeSig as any);
-
-    // Jump to start
-    t.seek(seg.startSec);
+  const saveVersion = (name?: string) => {
+    const label = (name ?? "").trim();
+    const v: ChoreoVersion = {
+      id: uid("ver"),
+      name: label || `Version ${versions.length + 1}`,
+      createdAt: Date.now(),
+      snapshot: {
+        sequences: structuredClone(sequences),
+        activeSequenceId: activeIdRef.current,
+      },
+    };
+    setVersions((prev) => [v, ...prev].slice(0, 50));
   };
 
-  const deleteSegment = (id: string) => {
-    setSegments((prev) => prev.filter((s) => s.id !== id));
-    if (activeSegmentId === id) setActiveSegmentId(null);
+  const restoreVersion = (versionId: string) => {
+    const v = versions.find((x) => x.id === versionId);
+    if (!v) return;
+
+    setSequences(structuredClone(v.snapshot.sequences));
+    setActiveSequenceId(v.snapshot.activeSequenceId);
+    setCurrentSec(0);
+    setIsPlaying(false);
   };
 
-  function quantizeBeat(rawBeat: number, beatsPerBar: number) {
-    const b = rawBeat;
-    if (quantize === "1beat") return Math.round(b);
-    if (quantize === "2beats") return Math.round(b / 2) * 2;
-    // 1bar
-    return Math.round(b / beatsPerBar) * beatsPerBar;
+  const deleteVersion = (versionId: string) => {
+    setVersions((prev) => prev.filter((v) => v.id !== versionId));
+  };
+
+  const clearVersions = () => setVersions([]);
+
+const buildExport = (includeVersions: boolean): ChoreoExport => ({
+  schema: "choreo-export-v1",
+  exportedAt: Date.now(),
+  app: "Choreo",
+  sequences: structuredClone(sequences),
+  activeSequenceId: activeIdRef.current,
+  versions: includeVersions ? structuredClone(versions) : undefined,
+});
+
+const importExport = (data: ChoreoExport) => {
+  if (!data || data.schema !== "choreo-export-v1") {
+    alert("Invalid file format (expected choreo-export-v1).");
+    return;
+  }
+  if (!Array.isArray(data.sequences)) {
+    alert("Invalid export: sequences missing.");
+    return;
   }
 
-  const captureFrameAtCurrentTime = (mode: EntityMode, positions: Record<string, Vec2>) => {
-    const active = getActiveSegment();
-    if (!active) {
-      alert("No active segment. Click “New Segment from Loop” first.");
-      return;
-    }
+  setSequences(structuredClone(data.sequences));
+  setActiveSequenceId(data.activeSequenceId ?? (data.sequences[0]?.id ?? null));
 
-    if (active.mode !== mode) {
-      alert(`Active segment is in "${active.mode}" mode. Switch view or create a new segment.`);
-      return;
-    }
+  if (Array.isArray(data.versions)) setVersions(structuredClone(data.versions));
 
-    const startBeatAbs = t.secToBeat(active.startSec);
-    const nowBeatAbs = t.secToBeat(t.currentSec);
+  setCurrentSec(0);
+  setIsPlaying(false);
+};
 
-    // convert to beat relative to segment start
-    const relBeatRaw = nowBeatAbs - startBeatAbs;
+  const value: ChoreoState = {
+    sequences,
+    activeSequenceId,
 
-    // if outside, still allow capture but it will be out-of-range; MVP: constrain to segment
-    const segLenBeats = t.secToBeat(active.endSec) - startBeatAbs;
-    const relBeatClamped = Math.max(0, Math.min(segLenBeats, relBeatRaw));
+    isPlaying,
+    currentSec,
+    durationSec,
 
-    const beatsPerBar = Number(String(active.timeSig).split("/")[0] || "4") || 4;
-    const relBeat = quantizeBeat(relBeatClamped, beatsPerBar);
+    createSequence,
+    setActiveSequence,
+    renameSequence,
+    deleteSequence,
 
-    setSegments((prev) =>
-      prev.map((s) => {
-        if (s.id !== active.id) return s;
+    addPicture,
+    renamePicture,
+    deletePicture,
+    setTransitionDuration,
 
-        const existing = s.frames.find((f) => f.beat === relBeat);
-        const frame: Frame = {
-          id: existing?.id ?? uid("fr"),
-          beat: relBeat,
-          positions
-        };
+    play,
+    pause,
+    seek,
 
-        const nextFrames = existing
-          ? s.frames.map((f) => (f.beat === relBeat ? frame : f))
-          : [...s.frames, frame];
+    getPoseAtSec,
+    getActiveSequence,
 
-        nextFrames.sort((a, b) => a.beat - b.beat);
+    versions,
+    saveVersion,
+    restoreVersion,
+    deleteVersion,
+    clearVersions,
 
-        return { ...s, frames: nextFrames };
-      })
-    );
-  };
-
-  const deleteFrameAtCurrentTime = () => {
-    const active = getActiveSegment();
-    if (!active) return;
-
-    const startBeatAbs = t.secToBeat(active.startSec);
-    const nowBeatAbs = t.secToBeat(t.currentSec);
-    const relBeatRaw = nowBeatAbs - startBeatAbs;
-
-    const beatsPerBar = Number(String(active.timeSig).split("/")[0] || "4") || 4;
-    const relBeat = quantizeBeat(relBeatRaw, beatsPerBar);
-
-    setSegments((prev) =>
-      prev.map((s) => {
-        if (s.id !== active.id) return s;
-        return { ...s, frames: s.frames.filter((f) => f.beat !== relBeat) };
-      })
-    );
-  };
-
-  const getPoseAtSec = (mode: EntityMode, sec: number) => {
-    const active = getActiveSegment();
-    if (!active) return null;
-    if (active.mode !== mode) return null;
-
-    const start = active.startSec;
-    const end = active.endSec;
-
-    if (end <= start) return null;
-
-    // Only show animated pose when we're inside the segment loop
-    if (sec < start || sec > end) return null;
-
-    const frames = active.frames;
-    if (!frames || frames.length === 0) return null;
-
-    // compute beat relative to segment start
-    const relBeat = t.secToBeat(sec) - t.secToBeat(start);
-
-    // Find surrounding frames
-    let left = frames[0];
-    let right = frames[frames.length - 1];
-
-    for (let i = 0; i < frames.length; i++) {
-      if (frames[i].beat <= relBeat) left = frames[i];
-      if (frames[i].beat >= relBeat) {
-        right = frames[i];
-        break;
-      }
-    }
-
-    if (left.beat === right.beat) return left.positions;
-
-    const tInterp = clamp01((relBeat - left.beat) / (right.beat - left.beat));
-
-    const ids = new Set([...Object.keys(left.positions), ...Object.keys(right.positions)]);
-    const out: Record<string, Vec2> = {};
-
-    ids.forEach((id) => {
-      const a = left.positions[id] ?? right.positions[id];
-      const b = right.positions[id] ?? left.positions[id];
-      out[id] = {
-        x: a.x + (b.x - a.x) * tInterp,
-        y: a.y + (b.y - a.y) * tInterp
-      };
-    });
-
-    return out;
-  };
-
-  const value: ChoreoState = useMemo(
-    () => ({
-      segments,
-      activeSegmentId,
-      quantize,
-      setQuantize,
-      createOrUpdateActiveFromLoop,
-      saveActiveSegment,
-      loadSegment,
-      deleteSegment,
-      captureFrameAtCurrentTime,
-      deleteFrameAtCurrentTime,
-      getPoseAtSec,
-      getActiveSegment
-    }),
-    [segments, activeSegmentId, quantize]
-  );
+    buildExport,
+    importExport
+   };
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
