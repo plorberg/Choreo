@@ -5,13 +5,13 @@ import { ChoreoProvider, useChoreo } from "./state/useChoreo";
 import Stage2D from "./components/Stage2D";
 import ThreePreview from "./components/ThreePreview";
 
-/** ---- helpers ---- */
 function fmtTime(sec: number) {
   if (!Number.isFinite(sec) || sec < 0) sec = 0;
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}:${String(s).padStart(2, "0")}`;
 }
+
 function fmtDate(ts: number) {
   try {
     return new Date(ts).toLocaleString();
@@ -19,6 +19,7 @@ function fmtDate(ts: number) {
     return String(ts);
   }
 }
+
 function downloadJson(filename: string, obj: any) {
   const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
@@ -31,30 +32,21 @@ function downloadJson(filename: string, obj: any) {
   URL.revokeObjectURL(url);
 }
 
-/** ---- PictureBar (your real transport) ---- */
 function PictureBar() {
   const { viewMode, setViewMode, dancers, setDancers } = useAppState() as any;
   const choreo = useChoreo();
   const [status, setStatus] = useState<string>("");
+  const lastAppliedLoadToken = useRef<any>(null);
 
   const activeSeq = choreo.getActiveSequence();
+
+  // ✅ needed for import
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const createSequence = () => {
     const name = prompt("Sequence name?", `Sequence ${choreo.sequences.length + 1}`) ?? "";
     choreo.createSequence(name);
     setStatus(`Created sequence: ${name || "Unnamed"}`);
-  };
-
-  const applyPictureToEditor = (positions: Record<string, { x: number; y: number }>) => {
-    if (typeof setDancers === "function") {
-      setDancers((prev: any[]) =>
-        prev.map((d) => {
-          const p = positions[String(d.id)];
-          return p ? { ...d, position: { x: p.x, y: p.y } } : d;
-        })
-      );
-    }
   };
 
   const savePicture = () => {
@@ -72,10 +64,38 @@ function PictureBar() {
     setStatus(`Saved Picture at ${new Date().toLocaleTimeString()}`);
   };
 
+// inside PictureBar()
+
+const app: any = useAppState(); // <-- get full app, not just destructured fields
+
+const applyPictureToEditor = (positions: Record<string, { x: number; y: number }>) => {
+  if (!positions) return;
+
+  // ✅ preferred: use the app's canonical update function
+  if (typeof app.moveDancer === "function") {
+    // update ONLY ids present in the picture (prevents weird resets)
+    for (const [id, p] of Object.entries(positions)) {
+      if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+      app.moveDancer(String(id), { x: p.x, y: p.y });
+    }
+    return;
+  }
+
+  // fallback: bulk update dancers
+  if (typeof setDancers === "function") {
+    setDancers((prev: any[]) =>
+      prev.map((d) => {
+        const p = positions[String(d.id)];
+        if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return d;
+        return { ...d, position: { x: p.x, y: p.y } };
+      })
+    );
+  }
+};
+
   const openSequences = () => {
     const list = choreo.sequences;
     if (list.length === 0) return alert("No sequences yet.");
-
     const menu = list
       .slice(0, 30)
       .map((s: any, i: number) => `${i + 1}. ${s.name} • pictures:${s.pictures.length}`)
@@ -88,9 +108,9 @@ function PictureBar() {
 
     const del = pick.startsWith("d");
     const ren = pick.startsWith("r");
-    const n = Number(del || ren ? pick.slice(1) : pick);
-    if (!Number.isFinite(n) || n < 1 || n > list.length) return;
+    const n = Number((del || ren) ? pick.slice(1) : pick);
 
+    if (!Number.isFinite(n) || n < 1 || n > list.length) return;
     const seq = list[n - 1];
 
     if (del) {
@@ -102,10 +122,29 @@ function PictureBar() {
       if (newName) choreo.renameSequence(seq.id, newName);
       return;
     }
-
     choreo.setActiveSequence(seq.id);
     setStatus(`Active: ${seq.name}`);
   };
+
+  function resolvePoseForPicture(seq: any, pictureIndex: number, dancerIds: string[]) {
+  const out: Record<string, { x: number; y: number }> = {};
+
+  // walk backwards from selected picture to 0, fill missing ids
+  for (let i = pictureIndex; i >= 0; i--) {
+    const pos = seq.pictures[i]?.positions ?? {};
+    for (const id of dancerIds) {
+      if (out[id]) continue;
+      const p = pos[id];
+      if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
+        out[id] = { x: p.x, y: p.y };
+      }
+    }
+    // stop early if all filled
+    if (Object.keys(out).length === dancerIds.length) break;
+  }
+
+  return out;
+}
 
   const openPictures = () => {
     const seq = choreo.getActiveSequence();
@@ -147,10 +186,16 @@ function PictureBar() {
       const idx = n - 1;
       const target = seq.pictures[idx];
       if (!target) return;
-      applyPictureToEditor(target.positions);
-      choreo.seek(choreo.getPictureStartSec(idx));
-      setStatus(`Editing picture: ${target.name}`);
-      return;
+      const dancerIds = (dancers ?? []).map((d: any) => String(d.id));
+      const resolved = resolvePoseForPicture(seq, idx, dancerIds);
+
+applyPictureToEditor(resolved);
+
+// Move timeline to start of that picture (optional but ok)
+choreo.seek(choreo.getPictureStartSec(idx));
+
+setStatus(`Editing picture: ${target.name}`);
+return;
     }
 
     if (del) {
@@ -171,6 +216,7 @@ function PictureBar() {
     }
   };
 
+  // Versioning
   const saveVersion = () => {
     const name = prompt("Version label (optional)?", `Version ${choreo.versions.length + 1}`) ?? "";
     choreo.saveVersion(name);
@@ -208,11 +254,26 @@ function PictureBar() {
 
     if (confirm(`Restore "${ver.name}"? This will overwrite current state.`)) {
       choreo.restoreVersion(ver.id);
-      setStatus(`Restored version: ${ver.name}`);
+      choreo.restoreVersion(ver.id);
+
+// force the guarded effect to run again for this restore
+lastAppliedLoadToken.current = null;
+
+requestAnimationFrame(() => {
+  if (!choreo.getActiveSequence() && choreo.sequences?.length) {
+    try {
+      choreo.setActiveSequence(choreo.sequences[0].id);
+    } catch {}
+  }
+  syncEditorToStartPicture();
+});
+setStatus(`Restored version: ${ver.name}`);
     }
   };
 
+  // ✅ Export / Import
   const onExport = () => {
+    // If you didn't add buildExport() yet, see note below.
     const includeVersions = confirm("Include versions in export?");
     const data = choreo.buildExport(includeVersions);
     const stamp = new Date(data.exportedAt).toISOString().replace(/[:.]/g, "-");
@@ -222,15 +283,44 @@ function PictureBar() {
 
   const onImportClick = () => fileInputRef.current?.click();
 
-  useEffect(() => {
-    const seq = choreo.getActiveSequence();
-    if (!seq || seq.pictures.length === 0) return;
-    const first = seq.pictures[0];
-    applyPictureToEditor(first.positions);
-    choreo.seek(0);
-    setStatus(`Loaded start picture: ${first.name}`);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [choreo.loadToken]);
+const syncEditorToStartPicture = () => {
+  const seq = choreo.getActiveSequence();
+  if (!seq || seq.pictures.length === 0) return;
+
+  const first = seq.pictures[0];
+  if (!first?.positions) return;
+
+  // stop playback + reset time so Stage2D renders editor positions (not playback pose)
+  if (typeof choreo.pause === "function") choreo.pause();
+  choreo.seek(0);
+
+  applyPictureToEditor(first.positions);
+  setStatus(`Loaded start picture: ${first.name}`);
+};
+
+useEffect(() => {
+  // run only ONCE per import/restore token
+  if (choreo.loadToken == null) return;
+  if (lastAppliedLoadToken.current === choreo.loadToken) return;
+
+  lastAppliedLoadToken.current = choreo.loadToken;
+
+  // delay to next frame so imported state is fully available
+  requestAnimationFrame(() => {
+    // if import didn't set an active seq, pick the first
+    if (!choreo.getActiveSequence() && choreo.sequences?.length) {
+      try {
+        choreo.setActiveSequence(choreo.sequences[0].id);
+      } catch {
+        // ignore if API not available
+      }
+    }
+
+    syncEditorToStartPicture();
+  });
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [choreo.loadToken]);
 
   const onImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -241,8 +331,23 @@ function PictureBar() {
       const data = JSON.parse(text);
 
       if (!confirm("Import will overwrite your current project. Continue?")) return;
-      choreo.importExport(data);
-      setStatus(`Imported: ${f.name}`);
+
+choreo.importExport(data);
+
+// force the guarded effect to run again for this import
+lastAppliedLoadToken.current = null;
+
+// also do an immediate “best effort” sync (in case loadToken doesn't change)
+requestAnimationFrame(() => {
+  if (!choreo.getActiveSequence() && choreo.sequences?.length) {
+    try {
+      choreo.setActiveSequence(choreo.sequences[0].id);
+    } catch {}
+  }
+  syncEditorToStartPicture();
+});
+
+setStatus(`Imported: ${f.name}`);
     } catch (err) {
       console.error(err);
       alert("Failed to import. File is not valid JSON or schema mismatch.");
@@ -252,10 +357,11 @@ function PictureBar() {
   };
 
   return (
-    <div className="transport" style={{ padding: 10, background: "#222", color: "#fff" }}>
+    <div className="transport">
       <button type="button" onClick={createSequence}>
         New Sequence
       </button>
+
       <button type="button" onClick={openSequences}>
         Sequences
       </button>
@@ -279,6 +385,7 @@ function PictureBar() {
       <button type="button" onClick={saveVersion}>
         Save Version
       </button>
+
       <button type="button" onClick={openVersions}>
         Versions ({choreo.versions.length})
       </button>
@@ -337,77 +444,36 @@ function PictureBar() {
   );
 }
 
-/* ---- AppInner ---- */
 function AppInner() {
-  const choreo = useChoreo();
-  const [show3D, setShow3D] = useState<boolean>(false);
+  const [show3D, setShow3D] = useState(true);
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: "#111",
-        color: "#eee",
-        display: "flex",
-        flexDirection: "column",
-      }}
-    >
-      {/* Header */}
-      <header
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          padding: 10,
-          borderBottom: "1px solid rgba(255,255,255,0.12)",
-        }}
-      >
-        <strong>Choreo Editor</strong>
+    <div className="app">
+      <header className="topbar">
+        <div className="brand">Choreo Editor (MVP + Versioning + Export/Import)</div>
 
-        <button
-          type="button"
-          onClick={() => setShow3D((v) => !v)}
-        >
-          {show3D ? "Hide 3D Preview" : "Show 3D Preview"}
-        </button>
-
-        <span style={{ opacity: 0.8 }}>
-          {show3D ? "3D enabled" : "3D disabled"}
-        </span>
-
-        <span style={{ marginLeft: "auto", opacity: 0.7 }}>
-          Sequence: {choreo.getActiveSequence()?.name ?? "—"}
-        </span>
+        <div className="topbar-actions">
+          <button type="button" onClick={() => setShow3D((s) => !s)}>
+            {show3D ? "Hide 3D" : "Show 3D"}
+          </button>
+        </div>
       </header>
 
-      {/* Main */}
-      <main
-        style={{
-          display: "grid",
-          gridTemplateColumns: show3D ? "1fr 1fr" : "1fr",
-          gap: 12,
-          padding: 12,
-          flex: 1,
-        }}
-      >
-        <div style={{ height: 520, border: "1px solid #333", borderRadius: 12 }}>
-          <Stage2D />
-        </div>
-
-        {show3D && (
-          <div style={{ height: 520, border: "1px solid #333", borderRadius: 12 }}>
-            <ThreePreview />
+      <main className="main">
+        <section className="panel">
+          <h2>2D Stage Editor</h2>
+          <div className="canvas">
+            <Stage2D />
           </div>
-        )}
+        </section>
+
+        <section className="panel">
+          <h2>3D Preview</h2>
+          <div className="canvas">{show3D ? <ThreePreview /> : <div className="hint">Enable 3D preview</div>}</div>
+        </section>
       </main>
 
-      {/* Footer / Menu */}
-      <footer
-        style={{
-          borderTop: "1px solid rgba(255,255,255,0.12)",
-          padding: 10,
-        }}
-      >
+      <footer className="timeline">
         <PictureBar />
       </footer>
     </div>

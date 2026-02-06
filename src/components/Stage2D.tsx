@@ -100,19 +100,40 @@ export default function Stage2D() {
     return getDancerPosFromApp(id);
   };
 
-  function setDancerPos(id: string, pos: Vec2) {
-    const p = {
-      x: clamp(snap(pos.x, SNAP), -STAGE_HALF, STAGE_HALF),
-      y: clamp(snap(pos.y, SNAP), -STAGE_HALF, STAGE_HALF),
-    };
+function setDancerPosFree(id: string, pos: Vec2) {
+  const p = {
+    x: clamp(pos.x, -STAGE_HALF, STAGE_HALF),
+    y: clamp(pos.y, -STAGE_HALF, STAGE_HALF),
+  };
 
-    if (typeof app.moveDancer === "function") return app.moveDancer(id, p);
-    if (typeof app.setDancers === "function") {
-      return app.setDancers((prev: any[]) => prev.map((d) => (String(d.id) === String(id) ? { ...d, position: p } : d)));
-    }
-    const d = findDancer(id);
-    if (d) d.position = p;
+  if (typeof app.moveDancer === "function") return app.moveDancer(id, p);
+  if (typeof app.setDancers === "function") {
+    return app.setDancers((prev: any[]) =>
+      prev.map((d) => (String(d.id) === String(id) ? { ...d, position: p } : d))
+    );
   }
+  const d = findDancer(id);
+  if (d) d.position = p;
+}
+
+function snapDancerPos(id: string) {
+  const cur = getDancerPosFromApp(id);
+  if (!cur) return;
+
+  const p = {
+    x: clamp(snap(cur.x, SNAP), -STAGE_HALF, STAGE_HALF),
+    y: clamp(snap(cur.y, SNAP), -STAGE_HALF, STAGE_HALF),
+  };
+
+  if (typeof app.moveDancer === "function") return app.moveDancer(id, p);
+  if (typeof app.setDancers === "function") {
+    return app.setDancers((prev: any[]) =>
+      prev.map((d) => (String(d.id) === String(id) ? { ...d, position: p } : d))
+    );
+  }
+  const d = findDancer(id);
+  if (d) d.position = p;
+}
 
   function moveCoupleByDelta(coupleId: string, dx: number, dy: number) {
     const c = couples.find((x) => String(x.id) === String(coupleId));
@@ -183,108 +204,143 @@ export default function Stage2D() {
   }, [viewMode, couples, dancers, isPlayback, dancerPose]);
 
   // Dragging
-  const dragRef = useRef<null | { item: Item; startWorld: Vec2; startPointer: Vec2 }>(null);
+  const dragRef = useRef<null | { dancerIds: string[]; lastPointer: Vec2 }>(null);
 
-  useEffect(() => {
-    const onMove = (e: PointerEvent) => {
-      if (choreo.isPlaying) return;
-      const drag = dragRef.current;
-      if (!drag) return;
-
-      const el = containerRef.current;
-      if (!el) return;
-      const r = el.getBoundingClientRect();
-      const px = e.clientX - r.left;
-      const py = e.clientY - r.top;
-
-      const pointerWorld = screenToWorld(px, py, rect.w, rect.h);
-      const dx = pointerWorld.x - drag.startPointer.x;
-      const dy = pointerWorld.y - drag.startPointer.y;
-
-      if (drag.item.kind === "dancer") {
-        setDancerPos(drag.item.dancerId, { x: drag.startWorld.x + dx, y: drag.startWorld.y + dy });
-      } else {
-        moveCoupleByDelta(drag.item.coupleId, dx, dy);
-      }
-    };
-
-    const onUp = () => {
-      dragRef.current = null;
-    };
-
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    window.addEventListener("pointercancel", onUp);
-    return () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      window.removeEventListener("pointercancel", onUp);
-    };
-  }, [rect.w, rect.h, choreo.isPlaying]);
-
-  const onPointerDownItem = (e: React.PointerEvent, it: Item) => {
+useEffect(() => {
+  const onMove = (e: PointerEvent) => {
     if (choreo.isPlaying) return;
-    e.preventDefault();
-    e.stopPropagation();
+    const drag = dragRef.current;
+    if (!drag) return;
 
     const el = containerRef.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    const px = e.clientX - r.left;
-    const py = e.clientY - r.top;
 
-    const pointerWorld = screenToWorld(px, py, rect.w, rect.h);
+    const pointerWorld = screenToWorld(
+      e.clientX - r.left,
+      e.clientY - r.top,
+      rect.w,
+      rect.h
+    );
 
-    dragRef.current = {
-      item: it,
-      startWorld: { ...it.pos },
-      startPointer: { ...pointerWorld },
-    };
+    const dx = pointerWorld.x - drag.lastPointer.x;
+    const dy = pointerWorld.y - drag.lastPointer.y;
+
+    // nichts zu tun
+    if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) return;
+
+    // move each affected dancer by delta (based on CURRENT positions)
+    for (const id of drag.dancerIds) {
+      const cur = getDancerPosFromApp(id);
+      if (!cur) continue;
+      setDancerPosFree(id, { x: cur.x + dx, y: cur.y + dy });
+    }
+
+    // re-anchor each move (critical)
+    drag.lastPointer = pointerWorld;
   };
 
-  // ✅ main->main polylines including movement pictures
-  const mainPolylines = useMemo(() => {
-    const seq = choreo.getActiveSequence();
-    if (!seq || seq.pictures.length < 2) return [];
+const onUp = () => {
+  const drag = dragRef.current;
+  dragRef.current = null;
+  if (!drag) return;
 
-    // main indices
-    const mainIdx = seq.pictures
-      .map((p, i) => ({ p, i }))
-      .filter(({ p }) => p.kind === "main")
-      .map(({ i }) => i);
+  // snap all affected tokens on release
+  for (const id of drag.dancerIds) {
+    snapDancerPos(id);
+  }
+};
 
-    if (mainIdx.length < 2) return [];
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+  window.addEventListener("pointercancel", onUp);
+  return () => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    window.removeEventListener("pointercancel", onUp);
+  };
+}, [rect.w, rect.h, choreo.isPlaying, dancers, couples]);
 
-    // for each main interval, build polylines per dancerId (using all pictures between)
-    const result: { dancerId: string; points: string }[] = [];
-    for (let k = 0; k < mainIdx.length - 1; k++) {
-      const a = mainIdx[k];
-      const b = mainIdx[k + 1];
+  const onPointerDownItem = (e: React.PointerEvent, it: Item) => {
+  if (choreo.isPlaying) return;
+  e.preventDefault();
+  e.stopPropagation();
 
-      // collect picture slice inclusive
-      const slice = seq.pictures.slice(a, b + 1);
+  const el = containerRef.current;
+  if (!el) return;
+  const r = el.getBoundingClientRect();
 
-      // dancer ids present in endpoints
-      const ids = new Set<string>([
-        ...Object.keys(slice[0].positions ?? {}),
-        ...Object.keys(slice[slice.length - 1].positions ?? {}),
-      ]);
+  const pointerWorld = screenToWorld(
+    e.clientX - r.left,
+    e.clientY - r.top,
+    rect.w,
+    rect.h
+  );
 
-      ids.forEach((id) => {
-        const pts: Vec2[] = [];
-        slice.forEach((pic) => {
-          const p = pic.positions?.[id];
-          if (p) pts.push(p);
-        });
-        if (pts.length < 2) return;
+  const dancerIds =
+    it.kind === "dancer"
+      ? [it.dancerId]
+      : it.selectIds; // couple → leader + follower
 
-        const spts = pts.map((p) => worldToScreen(p, rect.w, rect.h));
-        const points = spts.map((p) => `${p.x},${p.y}`).join(" ");
-        result.push({ dancerId: id, points });
-      });
-    }
-    return result;
-  }, [choreo, rect.w, rect.h]);
+  dragRef.current = {
+    dancerIds: dancerIds.map(String),
+    lastPointer: pointerWorld,
+  };
+};
+
+  // ✅ route ONLY from current MAIN to next MAIN (including MOVE pictures between)
+const mainPolylines = useMemo(() => {
+  const seq = choreo.getActiveSequence();
+  if (!seq || seq.pictures.length < 2) return [];
+
+  // collect main indices
+  const mainIdx = seq.pictures
+    .map((p, i) => ({ p, i }))
+    .filter(({ p }) => p?.kind !== "move")
+    .map(({ i }) => i);
+
+  if (mainIdx.length < 2) return [];
+
+  // determine "current main" based on currentSec (works both in play + edit via timeline)
+  const t = choreo.currentSec ?? 0;
+
+  // find the last MAIN picture whose start <= t
+  let currentMain = mainIdx[0];
+  for (const mi of mainIdx) {
+    const start = choreo.getPictureStartSec(mi);
+    if (start <= t + 1e-6) currentMain = mi;
+    else break;
+  }
+
+  // next main after currentMain
+  const curPos = mainIdx.indexOf(currentMain);
+  const nextMain = mainIdx[curPos + 1];
+  if (nextMain == null) return [];
+
+  // slice includes move pictures between mains
+  const slice = seq.pictures.slice(currentMain, nextMain + 1);
+
+  const ids = new Set<string>([
+    ...Object.keys(slice[0]?.positions ?? {}),
+    ...Object.keys(slice[slice.length - 1]?.positions ?? {}),
+  ]);
+
+  const result: { dancerId: string; points: string }[] = [];
+  ids.forEach((id) => {
+    const pts: Vec2[] = [];
+    slice.forEach((pic) => {
+      const p = pic.positions?.[id];
+      if (p) pts.push(p);
+    });
+    if (pts.length < 2) return;
+
+    const spts = pts.map((p) => worldToScreen(p, rect.w, rect.h));
+    const points = spts.map((p) => `${p.x},${p.y}`).join(" ");
+    result.push({ dancerId: id, points });
+  });
+
+  return result;
+}, [choreo, rect.w, rect.h, choreo.currentSec]);
 
   const floorA = "#7a5b3d";
   const floorB = "#6b4f35";

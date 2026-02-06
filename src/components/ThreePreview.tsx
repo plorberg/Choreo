@@ -40,7 +40,7 @@ function FloorAndGrid() {
     for (let i = 0; i <= (STAGE_HALF * 2) * 2; i++) {
       const v = min + i * 0.5;
       const isMeter = i % 2 === 0;
-      const emph = isMeter && (Math.abs(v) === 3 || Math.abs(v) === 6);
+      const emph = isMeter && (Math.abs(v) == 0 || Math.abs(v) === 3 || Math.abs(v) === 6);
       const major = isMeter && emph;
 
       makeLine(new THREE.Vector3(v, 0.01, min), new THREE.Vector3(v, 0.01, max), major);
