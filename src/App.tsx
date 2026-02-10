@@ -49,20 +49,24 @@ function PictureBar() {
     setStatus(`Created sequence: ${name || "Unnamed"}`);
   };
 
-  const savePicture = () => {
-    const positions: Record<string, { x: number; y: number }> = {};
-    (dancers ?? []).forEach((d: any) => {
-      if (!d?.id || !d?.position) return;
-      positions[String(d.id)] = { x: d.position.x, y: d.position.y };
-    });
+const savePicture = () => {
+  if (choreo.isPlaying) choreo.pause();
 
-    const seq = choreo.getActiveSequence();
-    const name = prompt("Picture name?", seq ? `Picture ${seq.pictures.length + 1}` : "Picture 1") ?? "";
+  const positions: Record<string, { x: number; y: number }> = {};
+  (dancers ?? []).forEach((d: any) => {
+    if (!d?.id || !d?.position) return;
+    positions[String(d.id)] = { x: d.position.x, y: d.position.y };
+  });
 
-    const isMove = confirm("Is this a MOVEMENT picture?\n\nOK = Movement\nCancel = Main");
-    choreo.addPicture(positions, name, isMove ? "move" : "main");
-    setStatus(`Saved Picture at ${new Date().toLocaleTimeString()}`);
-  };
+  const seq = choreo.getActiveSequence();
+  if (!seq) return alert("Create/select a sequence first.");
+
+  const name = prompt("Picture name?", `Picture ${seq.pictures.length + 1}`) ?? "";
+  const isMove = confirm("Is this a MOVEMENT picture?\n\nOK = Movement\nCancel = Main");
+
+  choreo.addPicture(positions, name, isMove ? "move" : "main");
+  setStatus(`Saved Picture at ${new Date().toLocaleTimeString()}`);
+};
 
 // inside PictureBar()
 

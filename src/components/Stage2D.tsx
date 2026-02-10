@@ -7,6 +7,7 @@ const SNAP = 0.5;
 const PAD = 18;
 const EMPHASIS_METERS = new Set([3, 6]);
 
+
 function clamp(v: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, v));
 }
@@ -145,8 +146,8 @@ function snapDancerPos(id: string) {
     const lp = getDancerPosFromApp(leaderId);
     const fp = getDancerPosFromApp(followerId);
 
-    if (lp) setDancerPos(leaderId, { x: lp.x + dx, y: lp.y + dy });
-    if (fp) setDancerPos(followerId, { x: fp.x + dx, y: fp.y + dy });
+    if (lp) setDancerPosFree(leaderId, { x: lp.x + dx, y: lp.y + dy });
+    if (fp) setDancerPosFree(followerId, { x: fp.x + dx, y: fp.y + dy });
   }
 
   type Item =
