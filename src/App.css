@@ -169,7 +169,7 @@ button:hover {
 }
 
 .timelineScroll {
-  height: 64px;
+  height: 92px;
   border-radius: 10px;
   border: 1px dashed rgba(255,235,210,0.22);
   overflow-x: auto;
@@ -181,6 +181,16 @@ button:hover {
 .timelineInner {
   height: 100%;
   position: relative;
+}
+
+.waveCanvas {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 12px;
+  height: 78px;
+  width: 100%;
+  pointer-events: none;
 }
 
 .tick {
@@ -223,3 +233,19 @@ button:hover {
 
 .loopA { background: rgba(46, 125, 255, 0.85); }
 .loopB { background: rgba(46, 255, 155, 0.85); }
+.loopHandle {
+  position: absolute;
+  top: 2px;
+  left: -9px;
+  width: 18px;
+  height: 18px;
+  border-radius: 10px;
+  background: rgba(255,235,210,0.85);
+  color: rgba(10,10,10,0.9);
+  font-size: 12px;
+  line-height: 18px;
+  text-align: center;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+  user-select: none;
+  cursor: ew-resize;
+}

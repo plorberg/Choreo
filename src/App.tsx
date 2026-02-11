@@ -4,6 +4,7 @@ import { TransportProvider } from "./state/useTransport";
 import { ChoreoProvider, useChoreo } from "./state/useChoreo";
 import Stage2D from "./components/Stage2D";
 import ThreePreview from "./components/ThreePreview";
+import TransportBar from "./components/TransportBar";
 
 function fmtTime(sec: number) {
   if (!Number.isFinite(sec) || sec < 0) sec = 0;
@@ -414,6 +415,10 @@ setStatus(`Imported: ${f.name}`);
 
       <span className="divider" />
 
+      
+
+      <span className="divider" />
+
       <button type="button" onClick={() => (choreo.isPlaying ? choreo.pause() : choreo.play())} disabled={!activeSeq}>
         {choreo.isPlaying ? "Pause" : "Play"}
       </button>
@@ -448,6 +453,24 @@ setStatus(`Imported: ${f.name}`);
   );
 }
 
+
+function TransportFooter() {
+  const app: any = useAppState();
+  const dancers = app.dancers ?? [];
+
+  const getEditorPositions = () => {
+    const positions: Record<string, { x: number; y: number }> = {};
+    (dancers ?? []).forEach((d: any) => {
+      if (!d?.id || !d?.position) return;
+      positions[String(d.id)] = { x: d.position.x, y: d.position.y };
+    });
+    return positions;
+  };
+
+  return <TransportBar getEditorPositions={getEditorPositions} />;
+}
+
+
 function AppInner() {
   const [show3D, setShow3D] = useState(true);
 
@@ -477,8 +500,10 @@ function AppInner() {
         </section>
       </main>
 
+      
       <footer className="timeline">
         <PictureBar />
+        <TransportFooter />
       </footer>
     </div>
   );

@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef } from "react";
 import { useTransport } from "../state/useTransport";
-import { useChoreo } from "../state/useChoreo";
 
 function fmtTime(sec: number) {
   const s = Math.max(0, sec);
@@ -11,11 +10,11 @@ function fmtTime(sec: number) {
 
 export default function TimelineRuler() {
   const t = useTransport();
-  const choreo = useChoreo();
 
-  // This is the *scroll container*
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  const dragRef = useRef<null | "A" | "B">(null);
 
   const pxPerBeat = 18;
   const secPerBeat = 60 / Math.max(1, t.bpm);
@@ -31,25 +30,47 @@ export default function TimelineRuler() {
   const loopAX = t.loopA == null ? null : 20 + (t.loopA / secPerBeat) * pxPerBeat;
   const loopBX = t.loopB == null ? null : 20 + (t.loopB / secPerBeat) * pxPerBeat;
 
-  const activeSeg = choreo.getActiveSegment();
+  const xToSec = (xGlobal: number) => {
+    const beat = Math.max(0, (xGlobal - 20) / pxPerBeat);
+    return beat * secPerBeat;
+  };
+
+  const eventToGlobalX = (clientX: number) => {
+    const el = scrollRef.current;
+    if (!el) return 0;
+    const rect = el.getBoundingClientRect();
+    const xInViewport = clientX - rect.left;
+    return xInViewport + el.scrollLeft;
+  };
 
   const onClick = (e: React.MouseEvent) => {
-    const el = scrollRef.current;
-    if (!el) return;
+    // if dragging marker, ignore click
+    if (dragRef.current) return;
 
-    const rect = el.getBoundingClientRect();
-
-    // ✅ CRITICAL FIX:
-    // Add horizontal scroll offset so clicks map to the correct global timeline position.
-    const xInViewport = e.clientX - rect.left;
-    const x = xInViewport + el.scrollLeft;
-
-    const beat = Math.max(0, (x - 20) / pxPerBeat);
-    const sec = beat * secPerBeat;
+    const x = eventToGlobalX(e.clientX);
+    const sec = xToSec(x);
 
     if (e.shiftKey) t.setLoopAAt(sec);
     else if (e.altKey) t.setLoopBAt(sec);
     else t.seek(sec);
+  };
+
+  const startDrag = (kind: "A" | "B") => (e: React.PointerEvent) => {
+    if (!t.bufferLoaded) return;
+    dragRef.current = kind;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  };
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!dragRef.current) return;
+    const x = eventToGlobalX(e.clientX);
+    const sec = xToSec(x);
+    if (dragRef.current === "A") t.setLoopAAt(sec);
+    else t.setLoopBAt(sec);
+  };
+
+  const endDrag = () => {
+    dragRef.current = null;
   };
 
   // Waveform canvas stretched to full timeline width
@@ -114,40 +135,13 @@ export default function TimelineRuler() {
     return out;
   }, [totalBeats, pxPerBeat, t.timeSig]);
 
-  const frameMarkers = useMemo(() => {
-    if (!activeSeg) return null;
-
-    const startBeatAbs = t.secToBeat(activeSeg.startSec);
-
-    return activeSeg.frames.map((fr) => {
-      const frBeatAbs = startBeatAbs + fr.beat;
-      const sec = frBeatAbs * secPerBeat;
-      const x = 20 + (sec / secPerBeat) * pxPerBeat;
-
-      return (
-        <button
-          key={fr.id}
-          className="frameDot"
-          style={{ left: x }}
-          title={`Frame @ beat ${fr.beat}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            t.seek(sec);
-          }}
-        />
-      );
-    });
-  }, [activeSeg, secPerBeat, pxPerBeat, t]);
-
   return (
     <div className="timelineOuter">
       <div className="timelineHeader">
         <div className="timeReadout">
           {fmtTime(t.currentSec)} / {fmtTime(t.durationSec || 0)}
         </div>
-        <div className="timeHelp">
-          Click=seek • Shift+Click=Loop A • Alt+Click=Loop B • Dots=Frames
-        </div>
+        <div className="timeHelp">Click=seek • Shift+Click=Loop A • Alt+Click=Loop B • Drag A/B markers</div>
         {t.loopEnabled && t.loopA != null && t.loopB != null && t.loopB > t.loopA && (
           <div className="loopReadout">
             Loop: {fmtTime(t.loopA)} → {fmtTime(t.loopB)}
@@ -155,16 +149,22 @@ export default function TimelineRuler() {
         )}
       </div>
 
-      <div className="timelineScroll" ref={scrollRef} onClick={onClick}>
+      <div className="timelineScroll" ref={scrollRef} onClick={onClick} onPointerMove={onPointerMove} onPointerUp={endDrag} onPointerCancel={endDrag}>
         <div className="timelineInner" style={{ width: totalWidth }}>
           <canvas className="waveCanvas" ref={canvasRef} />
 
           {ticks}
 
-          {loopAX != null && <div className="loopMarker loopA" style={{ left: loopAX }} />}
-          {loopBX != null && <div className="loopMarker loopB" style={{ left: loopBX }} />}
-
-          {frameMarkers}
+          {loopAX != null && (
+            <div className="loopMarker loopA" style={{ left: loopAX }} onPointerDown={startDrag("A")} title="Loop A (drag)">
+              <div className="loopHandle">A</div>
+            </div>
+          )}
+          {loopBX != null && (
+            <div className="loopMarker loopB" style={{ left: loopBX }} onPointerDown={startDrag("B")} title="Loop B (drag)">
+              <div className="loopHandle">B</div>
+            </div>
+          )}
 
           <div className="playhead" style={{ left: playheadX }} />
         </div>

@@ -31,6 +31,10 @@ export type TransportState = {
   setLoopAHere: () => void;
   setLoopBHere: () => void;
 
+  /** Convenience helpers for a single clip/snippet (implemented via loop A/B). */
+  setClip: (startSec: number, endSec: number, opts?: { seekToStart?: boolean }) => void;
+  clearClip: () => void;
+
   clearLoop: () => void;
   toggleLoop: () => void;
 

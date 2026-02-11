@@ -265,6 +265,33 @@ export function TransportProvider({ children }: { children: React.ReactNode }) {
   const setLoopAHere = () => setLoopAAt(currentSec);
   const setLoopBHere = () => setLoopBAt(currentSec);
 
+  
+const setClip = (startSec: number, endSec: number, opts?: { seekToStart?: boolean }) => {
+  const buf = bufferRef.current;
+  if (!buf) return;
+
+  const dur = buf.duration ?? durationSec ?? 0;
+  const a = Math.max(0, Math.min(dur, startSec));
+  const b = Math.max(0, Math.min(dur, endSec));
+  const start = Math.min(a, b);
+  const end = Math.max(a, b);
+
+  setLoopA(start);
+  loopARef.current = start;
+  setLoopB(end);
+  loopBRef.current = end;
+  setLoopEnabled(true);
+  loopEnabledRef.current = true;
+
+  // default: jump playhead to clip start (useful when setting a new clip)
+  const seekToStart = opts?.seekToStart ?? true;
+  if (seekToStart) seek(start);
+};;
+
+  const clearClip = () => {
+    clearLoop();
+  };
+
   async function computeWaveformPeaks(buf: AudioBuffer) {
     const channel = buf.getChannelData(0);
     const dur = buf.duration || 0;
@@ -352,6 +379,8 @@ export function TransportProvider({ children }: { children: React.ReactNode }) {
     setLoopBAt,
     setLoopAHere,
     setLoopBHere,
+    setClip,
+    clearClip,
     clearLoop,
     toggleLoop,
     secToBeat,
