@@ -117,6 +117,9 @@ type ChoreoState = {
 
   // ✅ legacy compat (old UI)
   setTransitionDuration: (pictureId: string, seconds: number) => void;
+
+  uiSelectedPictureId: string | null;
+  setUiSelectedPictureId: (pictureId: string | null) => void;
 };
 
 const STORAGE_KEY = "choreo_sequences_v4";
@@ -192,6 +195,7 @@ export function ChoreoProvider({ children }: { children: React.ReactNode }) {
 
   const [versions, setVersions] = useState<ChoreoVersion[]>([]);
   const [loadToken, setLoadToken] = useState(0);
+  const [uiSelectedPictureId, setUiSelectedPictureId] = useState<string | null>(null);
 
   /* -------------------- persistence -------------------- */
 
@@ -435,7 +439,7 @@ export function ChoreoProvider({ children }: { children: React.ReactNode }) {
       const base = ensureSeq();
       const out = base.map((s) => ({ ...s, pictures: [...s.pictures] }));
 
-      const activeId = activeSequenceIdRef.current ?? out[0]?.id ?? null;
+      const activeId = activeSequenceId ?? out[0]?.id ?? null;
       const sIdx = out.findIndex((s) => s.id === activeId);
       if (sIdx < 0) return out;
 
@@ -738,10 +742,14 @@ const renamePicture = (pictureId: string, name: string) => {
 
     loadToken,
     getPictureStartSec,
+
+    uiSelectedPictureId,
+    setUiSelectedPictureId,
   };
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
+
 
 export function useChoreo() {
   const ctx = useContext(Ctx);

@@ -56,7 +56,7 @@ export default function TimelineRuler() {
   };
 
   const startDrag = (kind: "A" | "B") => (e: React.PointerEvent) => {
-    if (!t.bufferLoaded) return;
+    if (!t.audioName && (!t.durationSec || t.durationSec <= 0)) return;
     dragRef.current = kind;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   };
@@ -114,7 +114,7 @@ export default function TimelineRuler() {
   const ticks = useMemo(() => {
     const beatsPerBar = Number(String(t.timeSig).split("/")[0] || "4") || 4;
 
-    const out: JSX.Element[] = [];
+    const out: React.ReactElement[] = [];
     const beats = Math.ceil(totalBeats);
 
     for (let b = 0; b <= beats; b++) {

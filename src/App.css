@@ -1,21 +1,19 @@
-:root {
+ :root {
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial,
     "Apple Color Emoji", "Segoe UI Emoji";
 }
 
-* {
-  box-sizing: border-box;
-}
+* { box-sizing: border-box; }
 
-body {
+html, body, #root {
+  height: 100%;
   margin: 0;
+  overflow: hidden; /* prevent page scroll; workspace scrolls */
   background: #0b0c10;
   color: #e9eef5;
 }
 
-button,
-input,
-select {
+button, input, select {
   background: #161923;
   color: #e9eef5;
   border: 1px solid #2a2f3d;
@@ -23,229 +21,198 @@ select {
   padding: 8px 10px;
 }
 
-button:hover {
-  border-color: #3a4154;
-  cursor: pointer;
+button:hover { border-color: #47506a; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.divider {
+  width: 1px;
+  height: 22px;
+  background: #2a2f3d;
+  margin: 0 8px;
 }
 
-.app {
-  height: 100vh;
-  display: grid;
-  grid-template-rows: auto 1fr auto;
+.pill {
+  border: 1px solid #2a2f3d;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  opacity: 0.9;
 }
 
-.topbar {
+/* ===== App layout ===== */
+.appRoot {
+  height: 100%;
   display: flex;
-  justify-content: space-between;
+  flex-direction: column;
+}
+
+.appHeader {
+  height: 52px;
+  border-bottom: 1px solid #22293b;
+  background: #0f1320;
+  display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
-  border-bottom: 1px solid #202431;
-  background: #0f1118;
+  position: relative;
+  z-index: 6000; /* keep header + dropdowns clickable above canvases */
 }
 
-.brand {
-  font-weight: 700;
-}
-
-.topbar-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.main {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  padding: 12px;
+.content {
+  flex: 1;
+  min-height: 0; /* critical for flex scroll */
   overflow: hidden;
+  position: relative;
+  z-index: 1;
+}
+
+.workspace {
+  height: 100%;
+  display: flex;
+  gap: 10px;
+  padding: 10px;
+  overflow: auto; /* internal scrolling */
+  position: relative;
+  z-index: 1;
 }
 
 .panel {
-  background: #0f1118;
-  border: 1px solid #202431;
+  flex: 1;
+  min-width: 420px;
+  border: 1px solid #22293b;
   border-radius: 14px;
-  padding: 12px;
-  overflow: hidden;
+  background: #0f1119;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  overflow: hidden;
 }
 
-.panel h2 {
-  margin: 0;
-  font-size: 14px;
+.panelTitle {
+  padding: 10px 12px;
+  border-bottom: 1px solid #22293b;
   font-weight: 700;
   opacity: 0.9;
 }
 
-.canvasPlaceholder {
+.panelBody {
   flex: 1;
-  border-radius: 12px;
-  border: 1px dashed #2a2f3d;
-  display: grid;
-  place-items: center;
-  color: #9aa3b2;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
 }
 
-.timeline {
-  background: #0f1118;
-  border-top: 1px solid #202431;
-  padding: 10px 12px;
+.hint {
+  padding: 12px;
+  opacity: 0.7;
+}
+
+.footer {
+  height: 180px;
+  border-top: 1px solid #22293b;
+  background: #0f1320;
+  display: flex;
+  align-items: stretch;
+  padding: 8px;
+  position: relative;
+  z-index: 5000; /* keep footer interactive */
+}
+
+/* ===== Header bar ===== */
+.headerBar {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 12px;
+}
+
+.headerBar .brand {
+  font-weight: 900;
+  letter-spacing: 0.5px;
+  margin-right: 6px;
+}
+
+.headerBar .menus {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  overflow: hidden;
+}
+
+.headerBar .status {
+  max-width: 38%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.85;
+  font-size: 12px;
+}
+
+/* ===== Dropdown ===== */
+.dd {
+  position: relative;
+}
+
+.dd-button {
+  background: #1e1e1e;
+  border: 1px solid #333;
+  padding: 6px 12px;
+  cursor: pointer;
+  color: white;
+}
+
+.dd-menu {
+  position: absolute;
+  top: 38px;
+  left: 0;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  padding: 8px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-}
-
-.transport {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.transport label {
-  display: inline-flex;
   gap: 6px;
-  align-items: center;
-  font-size: 12px;
-  color: #b8c0ce;
+  min-width: 160px;
+  z-index: 7000;
 }
 
-.transport input {
-  width: 80px;
-}
-
-.rulerPlaceholder {
-  height: 48px;
-  border-radius: 12px;
-  border: 1px dashed #2a2f3d;
-  display: grid;
-  place-items: center;
-  color: #9aa3b2;
-}
-
-.pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 6px 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(255,235,210,0.25);
-  color: rgba(255,235,210,0.85);
-  font-size: 12px;
-}
-
-.upload input { display: none; }
-.upload {
-  display: inline-flex;
-  gap: 8px;
-  align-items: center;
+.menuItem {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 8px 10px;
+  color: white;
   cursor: pointer;
 }
 
-.audioName {
-  margin-left: auto;
-  color: rgba(255,235,210,0.75);
-  font-size: 12px;
-  max-width: 280px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.menuItem:hover {
+  background: #242424;
 }
 
-/* Timeline */
-.timelineOuter {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.menuItem:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
-.timelineHeader {
+.menuItemHasSub {
   display: flex;
   justify-content: space-between;
-  color: rgba(255,235,210,0.8);
-  font-size: 12px;
+  align-items: center;
 }
 
-.timelineScroll {
-  height: 92px;
-  border-radius: 10px;
-  border: 1px dashed rgba(255,235,210,0.22);
-  overflow-x: auto;
-  overflow-y: hidden;
-  background: rgba(0,0,0,0.15);
-  position: relative;
+.menuChevron {
+  opacity: 0.7;
 }
 
-.timelineInner {
-  height: 100%;
-  position: relative;
+.submenuPanel {
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 6px;
+  min-width: 220px;
+  box-shadow: 0 8px 18px rgba(0,0,0,0.35);
 }
 
-.waveCanvas {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 12px;
-  height: 78px;
-  width: 100%;
-  pointer-events: none;
-}
+.muted { opacity: 0.75; font-size: 12px; }
 
-.tick {
-  position: absolute;
-  top: 18px;
-  height: 18px;
-  width: 1px;
-  background: rgba(255,235,210,0.22);
-}
-
-.tickBar {
-  top: 10px;
-  height: 26px;
-  width: 2px;
-  background: rgba(255,235,210,0.40);
-}
-
-.tickLabel {
-  position: absolute;
-  top: 2px;
-  font-size: 11px;
-  color: rgba(255,235,210,0.75);
-}
-
-.playhead {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  background: rgba(255, 79, 163, 0.95);
-  box-shadow: 0 0 10px rgba(255, 79, 163, 0.45);
-}
-
-.loopMarker {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-}
-
-.loopA { background: rgba(46, 125, 255, 0.85); }
-.loopB { background: rgba(46, 255, 155, 0.85); }
-.loopHandle {
-  position: absolute;
-  top: 2px;
-  left: -9px;
-  width: 18px;
-  height: 18px;
-  border-radius: 10px;
-  background: rgba(255,235,210,0.85);
-  color: rgba(10,10,10,0.9);
-  font-size: 12px;
-  line-height: 18px;
-  text-align: center;
-  box-shadow: 0 2px 10px rgba(0,0,0,0.35);
-  user-select: none;
-  cursor: ew-resize;
-}
+/* Ensure timeline canvas fits inside fixed footer */
+.waveCanvas { width: 100%; }
